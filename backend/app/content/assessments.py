@@ -1,0 +1,217 @@
+"""Quiz banks, aligned item-by-item to the five instructional objectives.
+
+Formative banks give tiered feedback and allow retries; the summative bank ("Face the
+Minotaur") uses unseen graphs to test transfer and reports mastery per objective.
+"""
+
+from app.content.schema import Assessment, Criterion, Item
+
+COMPARISON_RUBRIC = [
+    Criterion(
+        id="dfs-structure",
+        descriptor="Names the structure DFS relies on (a stack / LIFO / recursion).",
+        any_of=["stack", "lifo", "last in", "last-in", "recurs", "call stack", "most recent"],
+    ),
+    Criterion(
+        id="bfs-structure",
+        descriptor="Names the structure BFS relies on (a queue / FIFO).",
+        any_of=["queue", "fifo", "first in", "first-in", "oldest"],
+    ),
+    Criterion(
+        id="dfs-behaviour",
+        descriptor="Describes DFS following one branch as deep as possible before backtracking.",
+        any_of=["deep", "depth", "branch", "backtrack", "as far as", "one path", "dead end", "dead-end"],
+    ),
+    Criterion(
+        id="bfs-behaviour",
+        descriptor="Describes BFS visiting all nodes at one distance (level) before going further.",
+        any_of=["level", "layer", "breadth", "wide", "closest", "nearest", "distance", "neighbours first",
+                "neighbors first", "all neighbours", "all neighbors", "ripple"],
+    ),
+]
+
+ASSESSMENTS: dict[str, Assessment] = {}
+
+
+def _add(a: Assessment) -> None:
+    ASSESSMENTS[a.id] = a
+
+
+# --- Objective 1 ---------------------------------------------------------------------------
+_add(Assessment(id="anatomy-check", mode="formative", items=[
+    Item(id="a1", type="graph_select", objective=1, graph="anatomy", select="nodes",
+         prompt="Tap every vertex that is **adjacent** to D.",
+         answer=["B", "C", "E"],
+         hint="Adjacent means 'joined directly by an edge'. Follow each line that touches D.",
+         explanation="D has three edges: D–B, D–C and D–E, so its neighbours are B, C and E."),
+    Item(id="a2", type="graph_select", objective=1, graph="anatomy", select="edges",
+         prompt="Tap every **edge** that touches vertex A.",
+         answer=["A-B", "A-C"],
+         hint="Edges are the lines. Which lines have A at one end?",
+         explanation="A is an endpoint of exactly two edges: A–B and A–C. Its degree is 2."),
+    Item(id="a3", type="mcq", objective=1, graph="anatomy",
+         prompt="How many vertices and edges does this graph have?",
+         options=["5 vertices, 5 edges", "5 vertices, 4 edges", "4 vertices, 5 edges", "6 vertices, 5 edges"],
+         answer=[0],
+         hint="Count the circles, then count the lines separately.",
+         explanation="Vertices: A, B, C, D, E (5). Edges: A–B, A–C, B–D, C–D, D–E (5)."),
+    Item(id="a4", type="mcq", objective=1, graph="anatomy-directed",
+         prompt="This graph is **directed**. Can you travel directly from D to B?",
+         options=["Yes – there is an edge between them", "No – the edge only points from B to D"],
+         answer=[1],
+         hint="In a directed graph the arrowhead tells you which way you may travel.",
+         explanation="The arrow is B → D. Directed edges are one-way streets, so D → B is not allowed."),
+    Item(id="a5", type="graph_select", objective=1, graph="anatomy-directed", select="nodes",
+         prompt="Tap every vertex you can reach from A in **one step**.",
+         answer=["B", "C"],
+         hint="Only follow arrows that start at A.",
+         explanation="A has two outgoing arrows: A → B and A → C."),
+    Item(id="a6", type="mcq", objective=1, graph="anatomy",
+         prompt="Which vertex has the highest **degree**?",
+         options=["A", "B", "D", "E"],
+         answer=[2],
+         hint="The degree of a vertex is the number of edges touching it.",
+         explanation="D touches B, C and E, so its degree is 3 – more than any other vertex."),
+]))
+
+# --- Objective 2 ---------------------------------------------------------------------------
+_add(Assessment(id="representation-check", mode="formative", items=[
+    Item(id="r1", type="adjacency", objective=2, graph="build",
+         prompt="Build the **adjacency list** for this undirected graph. Drag (or tap) neighbours into each row.",
+         hint="For each vertex, list every vertex it shares an edge with. Undirected edges appear in *both* rows.",
+         explanation="Each undirected edge u–v shows up twice: v in u's row and u in v's row."),
+    Item(id="r2", type="adjacency", objective=2, graph="build-directed",
+         prompt="Now a **directed** graph. Build its adjacency list (out-neighbours only).",
+         hint="Only list a neighbour in a row if an arrow points *away* from that row's vertex.",
+         explanation="For directed graphs, u → v puts v in u's row only. Rows can be empty or very short."),
+    Item(id="r3", type="mcq", objective=2,
+         prompt="In the adjacency **matrix** of an *undirected* graph, M[B][D] = 1. What is M[D][B]?",
+         options=["1", "0", "It depends on the graph", "2"],
+         answer=[0],
+         hint="Think about what an undirected edge means for both endpoints.",
+         explanation="Undirected edges go both ways, so the matrix is symmetric: M[D][B] = M[B][D] = 1."),
+    Item(id="r4", type="mcq", objective=2,
+         prompt="Row C of an adjacency matrix (columns A, B, C, D, E) is **[0, 1, 0, 0, 1]**. Which are C's neighbours?",
+         options=["B and E", "A, C and D", "B only", "C and E"],
+         answer=[0],
+         hint="A 1 in a column means 'there is an edge to that column's vertex'.",
+         explanation="The 1s are in columns B and E, so C is adjacent to B and E."),
+    Item(id="r5", type="mcq", objective=2,
+         prompt="A graph has 10,000 vertices but each has only ~3 edges. Which representation wastes less memory?",
+         options=["Adjacency list", "Adjacency matrix", "They use the same memory"],
+         answer=[0],
+         hint="A matrix stores a cell for *every* pair of vertices, edge or not.",
+         explanation="A matrix needs 10,000² cells (100 million). A list only stores the ~30,000 real edges."),
+]))
+
+# --- Objective 4 ---------------------------------------------------------------------------
+_add(Assessment(id="backtracking-check", mode="formative", items=[
+    Item(id="b1", type="mcq", objective=4, graph="corridors",
+         prompt="DFS from A has just visited **D**. What is on the stack (bottom → top)?",
+         options=["A, B, C, D", "D", "A, D", "D, C, B, A"],
+         answer=[0],
+         hint="The stack holds the path from the start to where you are now.",
+         explanation="DFS went A → B → C → D without backtracking, so the stack is A, B, C, D with D on top."),
+    Item(id="b2", type="mcq", objective=4, graph="corridors",
+         prompt="Which vertex is the **first dead end** DFS meets, starting from A?",
+         options=["D", "C", "E", "G"],
+         answer=[0],
+         hint="Follow DFS: always take the alphabetically-first unvisited neighbour. Where do you first get stuck?",
+         explanation="A → B → C → D. D's only neighbour (C) is visited, so D is the first dead end."),
+    Item(id="b3", type="mcq", objective=4, graph="cycle",
+         prompt="DFS from A reaches **F**. A is joined to F, so why doesn't DFS go to A next?",
+         options=["A is already marked visited", "A isn't adjacent to F", "DFS never moves backwards",
+                  "A has the highest degree"],
+         answer=[0],
+         hint="What would happen in a cycle if DFS kept re-entering vertices?",
+         explanation="A was visited first. Skipping visited vertices is what stops DFS looping around the cycle forever."),
+    Item(id="b4", type="mcq", objective=4,
+         prompt="What does it mean when the DFS stack becomes **empty**?",
+         options=["The traversal is finished – every reachable vertex has been visited",
+                  "DFS hit a dead end and must restart", "The graph has a cycle", "BFS should take over"],
+         answer=[0],
+         hint="The stack holds vertices that might still have unexplored neighbours.",
+         explanation="Each pop means 'this vertex is fully explored'. Once the start vertex is popped, nothing is left to explore."),
+]))
+
+# --- Objective 5 ---------------------------------------------------------------------------
+_add(Assessment(id="compare-check", mode="formative", items=[
+    Item(id="c1", type="mcq", objective=5, graph="wide",
+         prompt="Which sequence is the **DFS** order from A?",
+         options=["A, B, E, J, F, C, G, D, H, I", "A, B, C, D, E, F, G, H, I, J", "A, D, I, H, C, G, B, F, E, J"],
+         answer=[0],
+         hint="DFS commits to one branch and goes as deep as it can before trying the next.",
+         explanation="DFS dives A → B → E → J before backtracking. Option 2 is BFS (level by level)."),
+    Item(id="c2", type="mcq", objective=5,
+         prompt="BFS keeps its frontier in a ___, while DFS keeps its path in a ___.",
+         options=["queue · stack", "stack · queue", "list · tree", "stack · stack"],
+         answer=[0],
+         hint="Which one serves the *oldest* discovered vertex first?",
+         explanation="BFS uses a FIFO queue (oldest first → level by level); DFS uses a LIFO stack (newest first → deep)."),
+    Item(id="c3", type="order", objective=5, graph="wide", algorithm="bfs", start="A",
+         prompt="Click the vertices in the order **BFS** would visit them, starting at A.",
+         hint="BFS finishes *every* vertex at distance 1 before any at distance 2.",
+         explanation="Level 0: A · Level 1: B, C, D · Level 2: E, F, G, H, I · Level 3: J."),
+    Item(id="c4", type="mcq", objective=5,
+         prompt="You need the route with the **fewest corridors** from the entrance to the lair. Which search guarantees it?",
+         options=["BFS – it explores in order of distance", "DFS – it goes deep quickly",
+                  "Either – they always find the same path"],
+         answer=[0],
+         hint="Which algorithm reaches every vertex 1 step away before any vertex 2 steps away?",
+         explanation="BFS reaches vertices in order of distance, so the first time it finds the lair it used the fewest edges."),
+    Item(id="c5", type="short_answer", objective=5,
+         prompt="In 1–3 sentences: **why** does DFS dive deep into one branch while BFS spreads out level by level?",
+         rubric=COMPARISON_RUBRIC, pass_criteria=2,
+         model_answer="DFS uses a stack (last in, first out), so it always continues from the most recently "
+                      "discovered vertex and follows one branch as deep as possible before backtracking. BFS uses "
+                      "a queue (first in, first out), so it finishes every vertex at one distance (level) before "
+                      "moving further out.",
+         hint="Think about the data structure each one uses and which vertex it takes out next.",
+         explanation="Strong answers link the data structure (stack vs queue) to the behaviour (deep vs level-by-level)."),
+]))
+
+# --- Summative: all objectives -------------------------------------------------------------
+_add(Assessment(id="final", mode="summative", pass_mark=0.6, items=[
+    Item(id="f1", type="graph_select", objective=1, graph="final-1", select="nodes",
+         prompt="Tap every vertex adjacent to **E**.", answer=["C", "F", "H"],
+         hint="", explanation="E has edges to C, F and H."),
+    Item(id="f2", type="mcq", objective=1, graph="rep-directed",
+         prompt="Which statement about this directed graph is **true**?",
+         options=["You can move from E to B in one step", "You can move from B to E in one step",
+                  "C has two outgoing edges", "A has an incoming edge"],
+         answer=[0], hint="", explanation="The arrow between B and E points E → B. C has no outgoing edges; nothing points into A."),
+    Item(id="f3", type="adjacency", objective=2, graph="tree",
+         prompt="Build the adjacency list for this graph.", hint="",
+         explanation="A: B, C · B: A, D, E · C: A, F · D: B · E: B · F: C"),
+    Item(id="f4", type="mcq", objective=2,
+         prompt="Row D of an adjacency matrix (columns A–F) is **[0, 1, 1, 0, 0, 1]**. Which are D's neighbours?",
+         options=["B, C and F", "A, D and E", "B and C", "D only"],
+         answer=[0], hint="", explanation="The 1s sit in columns B, C and F."),
+    Item(id="f5", type="order", objective=3, graph="final-1", algorithm="dfs", start="A",
+         prompt="Click the vertices in **DFS** order from A (alphabetical tie-break).", hint="",
+         explanation="A, B, C, D (dead end, back to C), E, F, G (dead end, back to F), H."),
+    Item(id="f6", type="order", objective=3, graph="final-2", algorithm="dfs", start="C",
+         prompt="This graph is **directed**. Click the DFS order starting from **C**.", hint="",
+         explanation="C → A → B → D → F. F's only out-neighbour B is visited, so DFS unwinds all the way back to C and finally takes E."),
+    Item(id="f7", type="mcq", objective=4, graph="final-1",
+         prompt="DFS from A has just visited **G**. What is on the stack (bottom → top)?",
+         options=["A, B, C, E, F, G", "A, B, C, D, E, F, G", "A, F, G", "G, F, E, C, B, A"],
+         answer=[0], hint="",
+         explanation="D was a dead end and was popped before DFS moved C → E. So D is visited but no longer on the stack."),
+    Item(id="f8", type="mcq", objective=4,
+         prompt="When does DFS **backtrack**?",
+         options=["When the current vertex has no unvisited neighbours", "After every visit",
+                  "Whenever it sees any visited vertex", "When the queue is empty"],
+         answer=[0], hint="", explanation="Backtracking (popping) happens exactly at dead ends: no unvisited neighbours remain."),
+    Item(id="f9", type="mcq", objective=5, graph="final-1",
+         prompt="Which sequence is the **BFS** order from A?",
+         options=["A, B, F, C, E, G, H, D", "A, B, C, D, E, F, G, H", "A, F, B, H, G, E, C, D", "A, B, F, C, D, E, G, H"],
+         answer=[0], hint="", explanation="Distance 1: B, F · distance 2: C (via B), E, G, H (via F) · distance 3: D."),
+    Item(id="f10", type="short_answer", objective=5,
+         prompt="A friend says: *\"DFS and BFS visit the same vertices, so they're basically the same.\"* Explain the key difference.",
+         rubric=COMPARISON_RUBRIC, pass_criteria=2,
+         model_answer="They visit the same vertices but in a different order. DFS uses a stack and goes as deep as "
+                      "possible down one branch before backtracking; BFS uses a queue and visits all vertices at one "
+                      "level (distance) before the next, which is why BFS finds shortest paths in unweighted graphs.",
+         hint="", explanation="Mention the data structure and how that changes the order of exploration."),
+]))
