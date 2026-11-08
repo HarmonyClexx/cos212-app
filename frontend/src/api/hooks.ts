@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from './client'
 import type {
-  Answer, AttemptStart, CheckResult, FinishResult, LeaderRow, Me, ModuleDetail, ModuleSummary, SubmitResult,
+  Answer, AttemptStart, CheckResult, FinishResult, HintResult, LeaderRow, Me, ModuleDetail, ModuleSummary, SubmitResult,
 } from './types'
 import type { TraceAction } from '../engine/tracer'
 
@@ -43,6 +43,12 @@ export function useCheckItem(attemptId: number | undefined) {
   return useMutation({
     mutationFn: (body: { item_id: string; answer?: Answer; reveal?: boolean }) =>
       api<CheckResult>(`/attempts/${attemptId}/check`, { body }),
+  })
+}
+
+export function useHint(attemptId: number | undefined) {
+  return useMutation({
+    mutationFn: (body: { item_id: string }) => api<HintResult>(`/attempts/${attemptId}/hint`, { body }),
   })
 }
 

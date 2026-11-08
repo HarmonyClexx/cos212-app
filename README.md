@@ -58,7 +58,7 @@ Ports use the course code to avoid clashing with other services: API **8750**, P
 | **Frame 3:** "Click the next node DFS will visit", call stack + visited panel | `TraceActivity` with auto-backtracking |
 | **Frame 4:** dead end, "What action must DFS take?", learner pops the stack | `TraceActivity` in manual mode, with a **Backtrack (pop)** button on the stack |
 | **Frame 4:** side-by-side DFS vs BFS replay | `CompareActivity`: synchronised race, stack vs queue |
-| **Progressive scaffolding** (Design 2.6): hint, then explanation + visual cue, then worked step | Tier 1 / 2 / 3 feedback in traces (`engine/tracer.ts`) and quizzes (`/attempts/{id}/check`) |
+| **Progressive scaffolding** (Design 2.6): hint, then explanation + visual cue, then worked step | A **Hint** button in every activity (see below). Level 1 = a nudge, level 2 = the idea in full with the relevant vertices ringed, level 3 = "show me" after three tries. In traces: `engine/tracer.ts`; in quizzes: `/attempts/{id}/hint` and `/check` |
 | **Consistent tie-break** (alphabetical) | `engine/graph.py` and `engine/graph.ts` |
 | **Working-memory constraint**: externalise the stack and visited list | Stack and visited panels are always on screen; the golden *thread* on the graph **is** the stack |
 | **Formative assessment** (CAI / simulation / concept mapping) | Five formative quizzes with retries; item types: MCQ, tap-the-graph, adjacency builder, click-the-order, short answer |
@@ -68,6 +68,24 @@ Ports use the course code to avoid clashing with other services: API **8750**, P
 | **Flow** (Csíkszentmihályi): immediate feedback, balanced challenge | Instant per-click feedback, streak counter, difficulty ramp (tree → cycle → 8-node network) |
 | **Malone & Lepper**: challenge, curiosity, fantasy, control | Stars, XP, levels, 10 badges, leaderboard · Theseus/Minotaur framing · learner drives every step |
 | **Constructivism** | Learners *perform* the algorithm, so mistakes are diagnosed rather than just marked wrong |
+
+### Hints everywhere, so being stuck isn't frustrating
+
+Help is available **on request** in every practice activity, not only after a wrong answer. It
+is also **offered** when a learner looks stuck: many students never ask (help avoidance), so the
+Hint button pulses after two slips or a quiet spell (20–30 s).
+
+| Activity | Hint | Cost |
+|---|---|---|
+| Labyrinth (maze) | **Ask Ariadne** rings the untried doors, or at a dead end the room the thread leads back to. Offered after 20 s or when going in circles | Free |
+| Inspect / Represent | **Stuck? Hint** explains the next unfinished discovery and points at the switch or vertex it needs | Free |
+| Trace challenges | Three levels: look at the top of the stack → the unvisited neighbours, ringed → "Show me this step" | 15% of a step per hint; 3★ needs none, 2★ stays in reach. The button stops once there's nothing new to say |
+| Practice quizzes | Two levels before any answer, then "Show me the answer" after three tries | 15% of the question per hint, half the price of a wrong guess (30%), so asking always beats guessing. "Now worth …" shows the price as you go. Getting there yourself is always worth ≥ 20% |
+| Short answers | Each unmet rubric criterion gets a guiding question (e.g. *"Which data structure holds BFS's frontier?"*), never the keywords | Free |
+| Final trial | None. It's the criterion-referenced summative test | — |
+
+Hint costs are enforced **server-side** (one `HINT_COST` in `engine/replay.py`, shared by traces and quizzes), and
+hint counts are stored per attempt for the Evaluate phase.
 
 ### Mistakes are diagnosed, not just marked wrong
 
@@ -123,8 +141,10 @@ recomputed in `tests/test_engine.py`, so a typo in course content fails the buil
 - **A graph:** add it with `_add(_g("my-graph", {"A": (x, y), ...}, "A-B B-C"))` in `content/graphs.py`
   (use `A>B` for directed edges; coordinates are in a 100 × 75 space).
 - **A practice challenge:** add an `Activity(kind="trace", config={"graph": ..., "start": ..., "auto_backtrack": ...})` to a module in `content/course.py`.
-- **A quiz question:** add an `Item(...)` to a bank in `content/assessments.py`. Adjacency and order
-  answers are derived from the graph automatically.
+- **A quiz question:** add an `Item(...)` to a bank in `content/assessments.py` with `hint` (level 1),
+  `hint2` (level 2, the idea without the answer) and optionally `focus=[...]` (vertices to ring).
+  A test fails if a practice question is missing either hint level. Adjacency and order answers are
+  derived from the graph automatically.
 
 ### API (full interactive docs at `/api/docs`)
 
@@ -135,6 +155,7 @@ recomputed in `tests/test_engine.py`, so a typo in course content fails the buil
 | GET | `/api/modules`, `/api/modules/{slug}` | course + per-learner state (locks, stars) |
 | POST | `/api/activities/{id}/submit` | trace / maze / lesson completion → reward |
 | POST | `/api/activities/{id}/attempts` | open a quiz attempt (sanitised items) |
+| POST | `/api/attempts/{id}/hint` | formative: next hint level (+ vertices to ring), priced into the credit |
 | POST | `/api/attempts/{id}/check` | formative: grade one item, tiered feedback |
 | POST | `/api/attempts/{id}/finish` | score, XP, badges, mastery, revision recommendations |
 | GET | `/api/leaderboard` | top 20 + your rank |
@@ -144,6 +165,6 @@ recomputed in `tests/test_engine.py`, so a typo in course content fails the buil
 ## Tests
 
 ```bash
-cd backend && .venv/bin/pytest          # 29 tests: engine, content integrity, API flows
+cd backend && .venv/bin/pytest          # 31 tests: engine, content integrity, API flows
 cd frontend && npm run typecheck && npm run build
 ```

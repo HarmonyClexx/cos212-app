@@ -143,6 +143,18 @@ def test_select_items_match_graph_facts() -> None:
     assert list(G("anatomy-directed").neighbours("A")) == ["B", "C"]
 
 
+def test_formative_items_have_full_scaffolding() -> None:
+    """Every practice question offers both hint levels, and its visual cue rings real vertices."""
+    for a in ASSESSMENTS.values():
+        for item in a.items:
+            if a.mode == "formative":
+                assert item.hint and item.hint2, item.id
+            if item.focus:
+                assert item.graph and set(item.focus) <= set(G(item.graph).nodes), item.id
+            for c in item.rubric or []:
+                assert c.nudge, c.id
+
+
 def test_module_order_is_contiguous() -> None:
     assert [m.order for m in MODULES] == list(range(len(MODULES)))
 
@@ -175,6 +187,11 @@ def test_grade_short_answer_rubric() -> None:
     assert g.correct and g.score == 1.0
     weak = grade_item(item, "they are different algorithms")
     assert not weak.correct
+    # Unmet criteria come with a nudge towards the gap; met ones don't need one.
+    partial = grade_item(item, "DFS uses a stack, so it keeps following the newest vertex it found.")
+    by_id = {c["id"]: c for c in partial.detail["criteria"]}
+    assert by_id["dfs-structure"]["met"] and "nudge" not in by_id["dfs-structure"]
+    assert not by_id["bfs-structure"]["met"] and "queue" not in by_id["bfs-structure"]["nudge"].lower()
 
 
 def test_level_curve() -> None:

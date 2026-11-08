@@ -26,6 +26,11 @@ MistakeKind = Literal[
 ]
 
 
+# Score deductions, in units of one step. A hint is cheaper than a mistake, so asking beats guessing.
+MISTAKE_COST = 0.25
+HINT_COST = 0.15
+
+
 class TraceAction(BaseModel):
     kind: Literal["visit", "backtrack", "hint", "reveal"]
     node: str | None = None
@@ -97,7 +102,7 @@ def grade_trace(g: Graph, start: str, actions: list[TraceAction], auto_backtrack
 
     total = len(required)
     completed = pos >= total
-    raw = (correct - 0.25 * mistakes - 0.15 * hints) / total if total else 1.0
+    raw = (correct - MISTAKE_COST * mistakes - HINT_COST * hints) / total if total else 1.0
     score = round(max(0.0, min(1.0, raw)), 3) if completed else 0.0
 
     if not completed:

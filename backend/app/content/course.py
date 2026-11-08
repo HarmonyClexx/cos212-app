@@ -50,7 +50,7 @@ MODULES: list[Module] = [
                      summary="Click vertices and edges to reveal what they are. Complete the discovery checklist.",
                      config={"graph": "anatomy", "directed_graph": "anatomy-directed"}),
             Activity(id="m1-quiz", kind="quiz", xp=60, objective=1, title="Name that part",
-                     summary="Six quick questions. Wrong answers unlock hints – you can always try again.",
+                     summary="Six quick questions. Stuck? Ask for a hint – and you can always try again.",
                      config={"assessment": "anatomy-check"}),
         ],
     ),

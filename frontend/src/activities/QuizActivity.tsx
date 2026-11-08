@@ -1,13 +1,16 @@
-// Formative quizzes: per-item "Check" with progressive scaffolding (hint -> explanation ->
-// worked answer after three tries). Summative ("Face the Minotaur"): no feedback until the
+// Formative quizzes: per-item "Check" with progressive scaffolding (Design 2.6). Help comes
+// from asking (Hint) or from a wrong try, whichever is first: level 1 is a nudge, level 2 the
+// idea in full with the relevant vertices ringed; the worked answer needs three tries. Summative ("Face the Minotaur"): no feedback until the
 // end, then a criterion-referenced report per objective with revision recommendations.
 
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useCheckItem, useFinishAttempt, useStartAttempt } from '../api/hooks'
-import type { Answer, AttemptStart, CheckResult, FinishResult, MasteryRow, QuizItem } from '../api/types'
+import { useCheckItem, useFinishAttempt, useHint, useStartAttempt } from '../api/hooks'
+import type { Answer, AttemptStart, CheckResult, FinishResult, HintResult, MasteryRow, QuizItem } from '../api/types'
 import { Icon } from '../components/Icon'
-import { FeedbackBox, Meter, masteryStatus } from '../components/bits'
+import { FeedbackBox, HintButton, Meter, masteryStatus } from '../components/bits'
+import type { Feedback } from '../engine/tracer'
+import { useIdle } from '../lib/useIdle'
 import { ItemView, emptyAnswer, isAnswered } from './items/QuizItems'
 import type { ActivityProps } from './shared'
 
@@ -39,7 +42,10 @@ function Formative({ attempt, onReward }: { attempt: AttemptStart; onReward: Act
   const [answers, setAnswers] = useState<Record<string, Answer>>(() => Object.fromEntries(items.map((i) => [i.id, emptyAnswer(i)])))
   const [results, setResults] = useState<Record<string, CheckResult>>({})
   const [revealed, setRevealed] = useState<Record<string, boolean>>({})
+  const [hints, setHints] = useState<Record<string, HintResult>>({})
+  const [last, setLast] = useState<Record<string, 'hint' | 'check'>>({})
   const check = useCheckItem(attempt.attempt_id)
+  const hint = useHint(attempt.attempt_id)
   const finish = useFinishAttempt(attempt.attempt_id)
 
   const item = items[idx]
@@ -52,16 +58,39 @@ function Formative({ attempt, onReward }: { attempt: AttemptStart; onReward: Act
     check.mutate({ item_id: item.id, answer: reveal ? undefined : answers[item.id], reveal }, {
       onSuccess: (r) => {
         setResults((m) => ({ ...m, [item.id]: { ...r, tries: reveal ? (m[item.id]?.tries ?? r.tries) : r.tries } }))
+        setLast((m) => ({ ...m, [item.id]: 'check' }))
         if (reveal) setRevealed((m) => ({ ...m, [item.id]: true }))
       },
     })
 
-  const fb = res && {
-    tone: (res.correct ? 'good' : revealed[item.id] ? 'info' : 'warn') as 'good' | 'info' | 'warn',
-    tier: res.correct ? 0 : revealed[item.id] ? 3 : res.tier,
-    title: res.correct ? (res.tries === 1 ? 'Correct — first try!' : `Correct after ${res.tries} tries.`) : revealed[item.id] ? 'Here is the worked answer' : res.feedback,
-    body: [res.tier >= 1 && !res.correct && !revealed[item.id] ? res.hint : null, res.explanation].filter(Boolean).join(' '),
-  }
+  const askHint = () =>
+    hint.mutate({ item_id: item.id }, {
+      onSuccess: (h) => {
+        setHints((m) => ({ ...m, [item.id]: h }))
+        setLast((m) => ({ ...m, [item.id]: 'hint' }))
+      },
+    })
+
+  const h = hints[item.id]
+  const showingHint = last[item.id] === 'hint' && h && !isResolved
+  // Help already seen on this item, from hints or wrong tries (capped at the 2 hint levels).
+  const level = Math.max(h?.level ?? 0, Math.min(2, res && !res.correct ? res.tier : 0))
+  const worth = (showingHint ? h.worth : res?.worth) ?? 1
+  const focus = isResolved ? undefined : showingHint ? h.focus : res?.focus
+  const idle = useIdle(25000, `${item.id}|${JSON.stringify(answers[item.id])}|${res?.tries ?? 0}|${level}`, !isResolved)
+
+  const fb: Feedback | null = showingHint
+    ? { tone: 'hint', tier: h.level, title: h.level === 1 ? 'Hint' : 'A bigger hint', body: h.hint }
+    : res
+      ? {
+          tone: res.correct ? 'good' : revealed[item.id] ? 'info' : 'warn',
+          tier: res.correct ? 0 : revealed[item.id] ? 3 : res.tier,
+          title: res.correct ? (res.tries === 1 ? 'Correct — first try!' : `Correct after ${res.tries} tries.`) : revealed[item.id] ? 'Here is the worked answer' : res.feedback,
+          body: res.correct || revealed[item.id] ? res.explanation : res.hint,
+        }
+      : idle
+        ? { tone: 'hint', tier: 0, title: 'Take your time', body: 'If you’re not sure where to start, press Hint. It costs much less than a wrong guess.' }
+        : null
 
   return (
     <div className="card">
@@ -79,12 +108,12 @@ function Formative({ attempt, onReward }: { attempt: AttemptStart; onReward: Act
 
       <ItemView key={item.id} item={item} value={answers[item.id]} locked={!!isResolved}
         onChange={(v) => setAnswers((a) => ({ ...a, [item.id]: v }))}
-        answer={isResolved ? res?.answer : undefined} detail={res && !res.correct ? res.detail : undefined} />
+        answer={isResolved ? res?.answer : undefined} detail={res && !res.correct ? res.detail : undefined} focus={focus} />
 
       <div style={{ marginTop: 16 }}>
         {fb && (
           <FeedbackBox fb={fb}>
-            {res && !res.correct && !revealed[item.id] && res.can_reveal && (
+            {!showingHint && res && !res.correct && !revealed[item.id] && res.can_reveal && (
               <button className="btn sm hint" style={{ marginTop: 10 }} onClick={() => doCheck(true)} disabled={check.isPending}>
                 <Icon name="eye" size={16} /> Show me the answer
               </button>
@@ -96,7 +125,17 @@ function Formative({ attempt, onReward }: { attempt: AttemptStart; onReward: Act
       <div className="controls" style={{ marginTop: 16 }}>
         <button className="btn ghost" onClick={() => setIdx((i) => Math.max(0, i - 1))} disabled={idx === 0}><Icon name="chevronLeft" /> Back</button>
         <span className="spacer" />
-        {check.isError && <span className="error-text">{(check.error as Error).message}</span>}
+        {(check.isError || hint.isError) && <span className="error-text">{((check.error ?? hint.error) as Error).message}</span>}
+        {!isResolved && worth < 1 && (
+          <span className="hint-note" title="Credit if your next answer is right. Getting there yourself is always worth at least 20%.">
+            <Icon name="target" size={14} /> Now worth <b>{Math.round(worth * 100)}%</b>
+          </span>
+        )}
+        {!isResolved && (
+          <HintButton level={level} max={2} onClick={askHint} disabled={hint.isPending}
+            nudge={idle || (!!res && !res.correct && level < 2)}
+            cost="A hint costs 15% of this question — half the price of a wrong guess." />
+        )}
         {!isResolved && (
           <button className="btn primary" onClick={() => doCheck()} disabled={check.isPending || !isAnswered(item, answers[item.id])}>
             <Icon name="check" /> Check

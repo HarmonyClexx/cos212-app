@@ -7,8 +7,9 @@ import { useMemo, useState } from 'react'
 import { useSubmitActivity } from '../api/hooks'
 import { GraphCanvas, type EdgeMark, type NodeMark } from '../components/GraphCanvas'
 import { Icon } from '../components/Icon'
-import { FeedbackBox } from '../components/bits'
+import { FeedbackBox, HintButton } from '../components/bits'
 import { adjacency, edgeId } from '../engine/graph'
+import { useIdle } from '../lib/useIdle'
 import type { ActivityProps } from './shared'
 
 export function MazeActivity({ activity, onReward }: ActivityProps) {
@@ -21,6 +22,8 @@ export function MazeActivity({ activity, onReward }: ActivityProps) {
   const [found, setFound] = useState(false)
   const [revealed, setRevealed] = useState(false)
   const [note, setNote] = useState<string>('You stand at the entrance. Corridors lead off into the dark…')
+  const [hintAt, setHintAt] = useState<string | null>(null) // the room Ariadne last whispered in
+  const [circling, setCircling] = useState(0) // moves in a row into chalked rooms, off the thread
   const submit = useSubmitActivity(activity.id)
 
   const here = path[path.length - 1]
@@ -34,6 +37,7 @@ export function MazeActivity({ activity, onReward }: ActivityProps) {
     const nextThread = back ? thread.slice(0, -1) : idx >= 0 ? thread.slice(0, idx + 1) : [...thread, to]
     setThread(nextThread)
     setPath((p) => [...p, to])
+    setCircling((c) => (chalk.has(to) && !back ? c + 1 : 0))
     if (to === goal) {
       setFound(true)
       setNote('You found the lair! The thread leads straight back to the entrance.')
@@ -72,6 +76,22 @@ export function MazeActivity({ activity, onReward }: ActivityProps) {
   const edgeMarks: Record<string, EdgeMark[]> = {}
   for (const [u, v] of g.edges) if (!revealed && !(chalk.has(u) && chalk.has(v))) edgeMarks[edgeId(g, u, v)] = ['fog']
 
+  // Ariadne's hint is her own rule applied to this room: an untried door if there is one,
+  // otherwise the way back along the thread. Free, and as often as you like.
+  const fresh = adj[here].filter((n) => !chalk.has(n))
+  const backTo = thread[thread.length - 2]
+  const whisper = fresh.length
+    ? { ring: fresh, text: fresh.length === 1
+        ? 'One door here leads somewhere you haven’t been. I’ve ringed it in blue.'
+        : `${fresh.length} doors here lead somewhere new — I’ve ringed them in blue. Any of them will do; pick one and keep going deeper.` }
+    : { ring: backTo ? [backTo] : [], text: backTo
+        ? `Every door here leads to a room with chalk on it. Follow your thread back to ${backTo} (ringed) and look for an untried door there.`
+        : 'Every room you can reach is chalked.' }
+  const hinted = hintAt === here && !found
+  if (hinted) for (const n of whisper.ring) nodeMarks[n] = [...(nodeMarks[n] ?? []), 'hint']
+  const idle = useIdle(20000, path.length, !found)
+  const stuck = !found && !hinted && (idle || circling >= 2)
+
   const claim = () =>
     submit.mutate({ data: { path } }, {
       onSuccess: ({ reward }) => onReward(reward, { graded: false, subtitle: `You escaped in ${path.length - 1} moves. Now let's name what you just did.` }),
@@ -103,19 +123,25 @@ export function MazeActivity({ activity, onReward }: ActivityProps) {
           ariaLabel="The labyrinth. Rooms adjacent to you can be clicked."
           maxHeight={520}
         />
-        <div style={{ marginTop: 12 }}>
-          <FeedbackBox fb={{ tone: found ? 'good' : 'info', tier: 0, title: found ? 'The lair!' : `Room ${here}`, body: note }} />
-        </div>
+      </div>
+
+      <div className="stack-v">
+        {/* Narration and help sit beside the maze, never below the fold. */}
+        {hinted
+          ? <FeedbackBox fb={{ tone: 'hint', tier: 0, title: 'Ariadne whispers…', body: whisper.text }} />
+          : (
+            <FeedbackBox fb={{ tone: found ? 'good' : 'info', tier: 0, title: found ? 'The lair!' : `Room ${here}`, body: note }}>
+              {stuck && <div className="hint-note" style={{ marginTop: 8 }}><Icon name="bulb" size={14} /> {circling >= 2 ? 'Ariadne can show you the way out of the loop.' : 'Feeling lost? Ariadne can point the way.'}</div>}
+            </FeedbackBox>
+          )}
         {!found && (
-          <div className="controls">
-            <button className="btn ghost" onClick={() => { setPath([start]); setThread([start]); setNote('Back at the entrance. Try again.') }}>
+          <div className="controls" style={{ marginTop: 0 }}>
+            <HintButton level={0} max={1} label="Ask Ariadne" onClick={() => setHintAt(here)} nudge={stuck} />
+            <button className="btn ghost" onClick={() => { setPath([start]); setThread([start]); setCircling(0); setHintAt(null); setNote('Back at the entrance. Try again.') }}>
               <Icon name="restart" /> Start over
             </button>
           </div>
         )}
-      </div>
-
-      <div className="stack-v">
         {!found ? (
           <div className="card flat">
             <div className="card-title"><Icon name="spool" size={18} /> Your tools</div>

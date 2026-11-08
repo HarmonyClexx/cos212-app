@@ -68,7 +68,8 @@ def grade_item(item: Item, answer: Any) -> ItemGrade:
 def _grade_mcq(item: Item, answer: Any) -> ItemGrade:
     chosen = {int(a) for a in (answer if isinstance(answer, list) else [answer])}
     ok = chosen == set(item.answer)
-    return ItemGrade(ok, 1.0 if ok else 0.0, "Correct!" if ok else item.hint)
+    # The hint itself travels separately (see hint_content), so it is never shown twice.
+    return ItemGrade(ok, 1.0 if ok else 0.0, "Correct!" if ok else "Not quite – have another look.")
 
 
 def _grade_select(item: Item, answer: Any) -> ItemGrade:
@@ -84,7 +85,8 @@ def _grade_select(item: Item, answer: Any) -> ItemGrade:
     elif missing and not extra:
         msg = f"Good so far – {len(missing)} more to find."
     else:
-        msg = item.hint
+        verb = "is" if len(missing) == 1 else "are"
+        msg = f"{len(extra)} of your picks don't belong, and {len(missing)} {verb} still missing."
     return ItemGrade(ok, round(score, 3), msg, {"extra": sorted(extra), "missing_count": len(missing)})
 
 
@@ -129,7 +131,9 @@ def _grade_short(item: Item, answer: Any) -> ItemGrade:
     text = _norm_text(str(answer))
     assert item.rubric
     met = [c for c in item.rubric if any(k in text for k in c.any_of)]
-    criteria = [{"id": c.id, "descriptor": c.descriptor, "met": c in met} for c in item.rubric]
+    # Unmet criteria carry a nudge: a question pointing at the gap, never the keywords.
+    criteria = [{"id": c.id, "descriptor": c.descriptor, "met": c in met, **({} if c in met else {"nudge": c.nudge})}
+                for c in item.rubric]
     words = len(text.split())
     score = len(met) / len(item.rubric)
     ok = len(met) >= item.pass_criteria and words >= 8
@@ -146,9 +150,19 @@ def _grade_short(item: Item, answer: Any) -> ItemGrade:
 
 def public_item(item: Item) -> dict[str, Any]:
     """Item as sent to the browser - answers and rubric keywords stripped."""
-    data = item.model_dump(exclude={"answer", "rubric", "model_answer", "explanation", "hint"})
+    data = item.model_dump(exclude={"answer", "rubric", "model_answer", "explanation", "hint", "hint2", "focus"})
     data["graph"] = GRAPHS[item.graph] if item.graph else None
     if item.rubric:
         # Criterion-referenced assessment: learners see the criteria, not the keywords.
         data["criteria"] = [c.descriptor for c in item.rubric]
     return data
+
+
+MAX_HINT_LEVEL = 2
+
+
+def hint_content(item: Item, level: int) -> dict[str, Any]:
+    """Scaffolding for *level* (Design 2.6): 1 = a nudge; 2 = the idea in full plus a visual cue."""
+    if level <= 1:
+        return {"hint": item.hint, "focus": []}
+    return {"hint": item.hint2 or item.explanation, "focus": list(item.focus)}

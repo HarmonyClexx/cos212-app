@@ -12,6 +12,16 @@ export interface ItemProps<T> {
   /** The correct answer, once revealed (formative after 3 tries, or summative review). */
   answer?: unknown
   detail?: GradeDetail
+  /** Level-2 hint visual cue: vertices to ring in blue. */
+  focus?: string[]
+}
+
+/** Node marks with the hint ring added to the focus vertices. */
+function withFocus(marks: Record<string, NodeMark[]>, focus: string[] | undefined): Record<string, NodeMark[]> {
+  if (!focus?.length) return marks
+  const out = { ...marks }
+  for (const id of focus) out[id] = [...(out[id] ?? []), 'hint']
+  return out
 }
 
 export function emptyAnswer(item: QuizItem): Answer {
@@ -50,11 +60,11 @@ export function ItemView(props: ItemProps<Answer>) {
   )
 }
 
-function Mcq({ item, value, onChange, locked, answer }: ItemProps<number[]>) {
+function Mcq({ item, value, onChange, locked, answer, focus }: ItemProps<number[]>) {
   const correct = answer as number[] | undefined
   return (
     <div className="stack-v">
-      {item.graph && <div className="panel"><GraphCanvas graph={item.graph} maxHeight={260} /></div>}
+      {item.graph && <div className="panel"><GraphCanvas graph={item.graph} nodeMarks={withFocus({}, focus)} maxHeight={260} /></div>}
       <div className="options" role={item.multi ? 'group' : 'radiogroup'}>
         {item.options!.map((o, i) => {
           const sel = value.includes(i)
@@ -72,7 +82,7 @@ function Mcq({ item, value, onChange, locked, answer }: ItemProps<number[]>) {
   )
 }
 
-function GraphSelect({ item, value, onChange, locked, answer, detail }: ItemProps<string[]>) {
+function GraphSelect({ item, value, onChange, locked, answer, detail, focus }: ItemProps<string[]>) {
   const g = item.graph!
   const correct = answer as string[] | undefined
   const extra = new Set(detail?.extra ?? [])
@@ -91,7 +101,7 @@ function GraphSelect({ item, value, onChange, locked, answer, detail }: ItemProp
   }
   return (
     <div className="panel">
-      <GraphCanvas graph={g} nodeMarks={nodeMarks} edgeMarks={edgeMarks} maxHeight={320}
+      <GraphCanvas graph={g} nodeMarks={withFocus(nodeMarks, focus)} edgeMarks={edgeMarks} maxHeight={320}
         onNodeClick={item.select === 'nodes' && !locked ? toggle : undefined}
         onEdgeClick={item.select === 'edges' && !locked ? toggle : undefined} />
       <div className="row small muted" style={{ marginTop: 6 }}>
@@ -102,7 +112,7 @@ function GraphSelect({ item, value, onChange, locked, answer, detail }: ItemProp
   )
 }
 
-function AdjacencyBuilder({ item, value, onChange, locked, answer, detail }: ItemProps<Record<string, string[]>>) {
+function AdjacencyBuilder({ item, value, onChange, locked, answer, detail, focus }: ItemProps<Record<string, string[]>>) {
   const g = item.graph!
   const ids = g.nodes.map((n) => n.id)
   const [held, setHeld] = useState<string | null>(null)
@@ -125,7 +135,7 @@ function AdjacencyBuilder({ item, value, onChange, locked, answer, detail }: Ite
   return (
     <div className="adj-grid">
       <div className="panel">
-        <GraphCanvas graph={g} maxHeight={300} />
+        <GraphCanvas graph={g} nodeMarks={withFocus({}, focus)} maxHeight={300} />
         <div className="small muted center">{g.directed ? 'Directed — list out-neighbours only' : 'Undirected — edges go both ways'}</div>
       </div>
       <div className="stack-v">
@@ -165,7 +175,7 @@ function AdjacencyBuilder({ item, value, onChange, locked, answer, detail }: Ite
   )
 }
 
-function OrderClicker({ item, value, onChange, locked, answer, detail }: ItemProps<string[]>) {
+function OrderClicker({ item, value, onChange, locked, answer, detail, focus }: ItemProps<string[]>) {
   const g = item.graph!
   const seq = (answer as string[] | undefined) ?? value
   const prefix = answer ? seq.length : detail?.correct_prefix
@@ -177,7 +187,7 @@ function OrderClicker({ item, value, onChange, locked, answer, detail }: ItemPro
   return (
     <div className="stack-v">
       <div className="panel">
-        <GraphCanvas graph={g} nodeMarks={nodeMarks} badges={badges} maxHeight={320}
+        <GraphCanvas graph={g} nodeMarks={withFocus(nodeMarks, focus)} badges={badges} maxHeight={320}
           onNodeClick={locked ? undefined : (id) => !value.includes(id) && onChange([...value, id])}
           nodeClickable={(id) => !value.includes(id)} />
       </div>
@@ -213,9 +223,10 @@ function ShortAnswer({ item, value, onChange, locked, answer, detail }: ItemProp
           Marking criteria <span className="faint">· pass = {item.pass_criteria} of {item.criteria?.length}, distinction = all</span>
         </div>
         <ul className="criteria">
-          {(met ?? item.criteria?.map((d) => ({ descriptor: d, met: undefined as boolean | undefined })) ?? []).map((c, i) => (
+          {(met ?? item.criteria?.map((d) => ({ descriptor: d, met: undefined as boolean | undefined, nudge: undefined as string | undefined })) ?? []).map((c, i) => (
             <li key={i} className={c.met === undefined ? '' : c.met ? 'met' : 'unmet'}>
-              <span className="mk"><Icon name={c.met === undefined ? 'dot' : c.met ? 'check' : 'minus'} size={16} /></span>{c.descriptor}
+              <span className="mk"><Icon name={c.met === undefined ? 'dot' : c.met ? 'check' : 'minus'} size={16} /></span>
+              <span>{c.descriptor}{c.met === false && c.nudge && <span className="nudge"><Icon name="bulb" size={12} /> {c.nudge}</span>}</span>
             </li>
           ))}
         </ul>

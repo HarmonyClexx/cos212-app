@@ -7,11 +7,14 @@ import { useSubmitActivity } from '../api/hooks'
 import { StackPanel, VisitedStrip } from '../components/DataStructures'
 import { GraphCanvas } from '../components/GraphCanvas'
 import { Icon } from '../components/Icon'
-import { FeedbackBox } from '../components/bits'
+import { FeedbackBox, HintButton } from '../components/bits'
 import {
   applyAction, contextIndex, initTrace, isDone, type Feedback, type TraceAction, type TraceState,
 } from '../engine/tracer'
+import { useIdle } from '../lib/useIdle'
 import { addMark, traceVisuals, type ActivityProps } from './shared'
+
+const HINT_COST = 'Each hint costs a little: 3★ needs none, but 2★ stays in reach.'
 
 export function TraceActivity({ activity, onReward }: ActivityProps) {
   const g = activity.config.graph!
@@ -72,7 +75,17 @@ export function TraceActivity({ activity, onReward }: ActivityProps) {
     ? { tone: 'info', tier: 0, title: 'No unvisited neighbours found.', body: `${vis.current} is a dead end. What action must DFS take?` }
     : null
 
-  const fb = (animating ? autoNote : null) ?? (s.feedback?.tone === 'good' && assistNote ? assistNote : s.feedback ?? assistNote)
+  // Offer help rather than wait to be asked: after two slips on a step, or 20 s without a move.
+  const idle = useIdle(20000, s.log.length, !done && !animating)
+  const stuck = s.wrongOnStep >= 2 || idle
+  const idleNote: Feedback | null = idle && (!s.feedback || s.feedback.tone === 'good')
+    ? { tone: 'hint', tier: 0, title: 'Take your time — or take a hint',
+        body: `Start from ${vis.current}, the vertex on top of the stack. Which of its neighbours has no chalk mark yet? If you're unsure, press Hint.` }
+    : null
+
+  const fb = (animating ? autoNote : null)
+    ?? (s.feedback?.tone === 'good' && assistNote ? assistNote : null)
+    ?? idleNote ?? s.feedback ?? assistNote
 
   const nodeMarks = { ...vis.nodeMarks }
   if (!animating) addMark(nodeMarks, s.feedback?.tone !== 'good' ? s.feedback?.highlight : undefined, 'hint')
@@ -120,9 +133,8 @@ export function TraceActivity({ activity, onReward }: ActivityProps) {
         </div>
 
         <div className="controls">
-          <button className="btn hint" onClick={() => act({ kind: 'hint' })} disabled={done || animating}>
-            <Icon name="bulb" /> Hint
-          </button>
+          <HintButton level={s.tier} max={3} onClick={() => act({ kind: 'hint' })} disabled={done || animating}
+            nudge={stuck && !canReveal} cost={HINT_COST} />
           <button className="btn ghost" onClick={() => { submitted.current = false; setS(initTrace(g, start, auto)) }} disabled={submit.isPending}>
             <Icon name="restart" /> Restart
           </button>
@@ -144,7 +156,7 @@ export function TraceActivity({ activity, onReward }: ActivityProps) {
           </FeedbackBox>
         ) : (
           <div className="feedback info"><div className="ic"><Icon name="info" /></div>
-            <div><div className="t">Your move</div><div className="b">Wrong clicks unlock hints. After three, you can ask to be shown the step.</div></div>
+            <div><div className="t">Your move</div><div className="b">Stuck? Press <b>Hint</b> — each press goes a little further. After three tries or three hints, you can ask to be shown the step.</div></div>
           </div>
         )}
         <div className="card flat">

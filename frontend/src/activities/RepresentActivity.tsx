@@ -3,8 +3,10 @@
 
 import { useMemo, useState } from 'react'
 import { useSubmitActivity } from '../api/hooks'
+import { Checklist, useChecklistHint } from '../components/Checklist'
 import { GraphCanvas, type EdgeMark, type NodeMark } from '../components/GraphCanvas'
 import { Icon } from '../components/Icon'
+import { HintButton } from '../components/bits'
 import { adjacency } from '../engine/graph'
 import type { ActivityProps } from './shared'
 
@@ -54,6 +56,14 @@ export function RepresentActivity({ activity, onReward }: ActivityProps) {
     cellHl.add(`${focus.u}${focus.v}`)
     if (!directed) { rowHl.add(focus.v); cellHl.add(`${focus.v}${focus.u}`) }
   }
+  const hint = useChecklistHint(CHECKS, done, () => 1)
+  const tips: Record<string, string> = {
+    node: 'Hover (or tap) any circle on the drawing. Its row lights up in the adjacency list.',
+    edge: directed ? 'Switch back to Undirected first, then hover a line.' : 'Hover (or tap) a line between two circles, then look at the matrix: one edge lights up two cells.',
+    directed: 'Use the Undirected / Directed switch above the drawing.',
+    asym: directed ? 'Hover (or tap) an arrow. Only one matrix cell lights up, because the edge goes one way only.' : 'Switch to Directed first, then hover an arrow.',
+  }
+  const tabsCue = hint.level > 0 && (hint.next === 'directed' || (hint.next === 'edge' && directed) || (hint.next === 'asym' && !directed))
   const hlNbr = (row: string, n: string) => focus?.type === 'edge' && ((row === focus.u && n === focus.v) || (!directed && row === focus.v && n === focus.u))
 
   return (
@@ -62,7 +72,7 @@ export function RepresentActivity({ activity, onReward }: ActivityProps) {
         <div className="stage">
           <div className="stage-head">
             <div className="prompt" style={{ flex: 1 }}>Hover (or tap) the drawing — watch the list and matrix.</div>
-            <div className="tabs" style={{ width: 240 }}>
+            <div className={`tabs ${tabsCue ? 'nudge' : ''}`} style={{ width: 240 }}>
               <button className={!directed ? 'active' : ''} onClick={() => { setDirected(false); setFocus(null) }}>Undirected</button>
               <button className={directed ? 'active' : ''} onClick={() => { setDirected(true); setFocus(null); tick('directed') }}>Directed</button>
             </div>
@@ -111,9 +121,12 @@ export function RepresentActivity({ activity, onReward }: ActivityProps) {
         </div>
         <div className="card flat">
           <div className="card-title"><Icon name="target" size={18} /> Spot it <span className="faint small">{done.size}/{CHECKS.length}</span></div>
-          <ul className="checklist">
-            {CHECKS.map((c) => <li key={c.id} className={done.has(c.id) ? 'done' : ''}><span className="box">{done.has(c.id) && <Icon name="check" size={14} />}</span>{c.text}</li>)}
-          </ul>
+          <Checklist items={CHECKS} done={done} tipFor={hint.level ? hint.next : null} tip={hint.next ? tips[hint.next] : undefined} />
+          {done.size < CHECKS.length && (
+            <div className="row" style={{ marginTop: 12 }}>
+              <HintButton small level={hint.level} max={hint.max} onClick={hint.ask} nudge={hint.nudge} label="Stuck? Hint" />
+            </div>
+          )}
           <button className="btn gold block" style={{ marginTop: 14 }} disabled={done.size < CHECKS.length || submit.isPending}
             onClick={() => submit.mutate({ data: { explored: [...done] } }, { onSuccess: ({ reward }) => onReward(reward, { graded: false, subtitle: 'Next: build these yourself.' }) })}>
             <Icon name="check" /> Got it

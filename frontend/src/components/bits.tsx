@@ -59,6 +59,37 @@ export function FeedbackBox({ fb, children }: { fb: Feedback | null; children?: 
   )
 }
 
+/**
+ * The one hint button used by every activity: dots show how much help has been used, it pulses
+ * gently when the learner looks stuck, and its tooltip states the price up front.
+ */
+export function HintButton({ level, max, onClick, disabled = false, nudge = false, cost, label = 'Hint', small = false }: {
+  level: number
+  max: number
+  onClick: () => void
+  disabled?: boolean
+  nudge?: boolean
+  /** Shown as the tooltip, e.g. "Costs a little: 3★ needs no hints". Omit for free hints. */
+  cost?: string
+  label?: string
+  small?: boolean
+}) {
+  const maxed = level >= max
+  const pulse = nudge && !maxed && !disabled
+  return (
+    <button className={`btn hint ${small ? 'sm' : ''} ${pulse ? 'nudge' : ''}`} onClick={onClick} disabled={disabled || maxed}
+      title={maxed ? 'That is every hint for this step' : cost ?? 'Free – ask as often as you like'}
+      aria-label={`${label}${maxed ? ' (all hints used)' : ''}. ${level} of ${max} used.${cost && !maxed ? ` ${cost}` : ''}`}>
+      <Icon name="bulb" size={small ? 16 : 18} /> {maxed ? 'All hints used' : label}
+      {max > 1 && (
+        <span className="tier-dots" aria-hidden="true">
+          {Array.from({ length: max }, (_, i) => <i key={i} className={i < level ? 'on' : ''} />)}
+        </span>
+      )}
+    </button>
+  )
+}
+
 export const BLOOM_COLORS: Record<string, string> = {
   Explain: 'chip brand',
   Apply: 'chip gold',

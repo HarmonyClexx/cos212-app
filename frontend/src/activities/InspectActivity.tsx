@@ -3,8 +3,10 @@
 
 import { useMemo, useState } from 'react'
 import { useSubmitActivity } from '../api/hooks'
+import { Checklist, useChecklistHint } from '../components/Checklist'
 import { GraphCanvas, type EdgeMark, type NodeMark } from '../components/GraphCanvas'
 import { Icon } from '../components/Icon'
+import { HintButton } from '../components/bits'
 import { adjacency, listJoin } from '../engine/graph'
 import type { ActivityProps } from './shared'
 
@@ -61,12 +63,29 @@ export function InspectActivity({ activity, onReward }: ActivityProps) {
 
   const allDone = CHECKS.every((c) => found.has(c.id))
 
+  // Free hints for the next discovery: a tip, then (for the degree hunt) a ring on the answer.
+  const hint = useChecklistHint(CHECKS, found, (id) => (id === 'degree' ? 2 : 1))
+  const busiest = Object.keys(undirAdj).filter((n) => undirAdj[n].length === maxDeg)
+  const tips: Record<string, string> = {
+    vertex: 'Click any circle on the graph. The Inspector on the right explains what it is.',
+    edge: isDirected ? 'Switch back to Undirected (above the graph), then click one of the lines.' : 'Click one of the lines joining two circles — not a circle this time.',
+    directed: 'Use the Undirected / Directed switch above the graph.',
+    'directed-edge': isDirected ? 'Click one of the arrows, and notice which way it points.' : 'Switch to Directed first, then click one of the arrows.',
+    degree: isDirected ? 'Degree is counted on the undirected graph: switch back to Undirected first.'
+      : hint.level >= 2 ? `I've ringed it: ${busiest.join(' and ')} has the most lines meeting at it. Click it to see its degree.`
+        : 'A vertex’s degree is the number of lines touching it. Click the vertex where the most lines meet.',
+  }
+  const tabsCue = hint.level > 0 && (
+    hint.next === 'directed' || (hint.next === 'edge' && isDirected) || (hint.next === 'degree' && isDirected)
+    || (hint.next === 'directed-edge' && !isDirected))
+  if (hint.next === 'degree' && hint.level >= 2 && !isDirected) for (const n of busiest) nodeMarks[n] = [...(nodeMarks[n] ?? []), 'hint']
+
   return (
     <div className="act-grid wide-side">
       <div className="stage">
         <div className="stage-head">
           <div className="prompt" style={{ flex: 1 }}>Click any <b>vertex</b> (circle) or <b>edge</b> (line) to inspect it.</div>
-          <div className="tabs" role="tablist" aria-label="Graph type" style={{ width: 240 }}>
+          <div className={`tabs ${tabsCue ? 'nudge' : ''}`} role="tablist" aria-label="Graph type" style={{ width: 240 }}>
             <button role="tab" aria-selected={!isDirected} className={!isDirected ? 'active' : ''} onClick={() => toggle(false)}>Undirected</button>
             <button role="tab" aria-selected={isDirected} className={isDirected ? 'active' : ''} onClick={() => toggle(true)}>Directed</button>
           </div>
@@ -112,13 +131,12 @@ export function InspectActivity({ activity, onReward }: ActivityProps) {
 
         <div className="card flat">
           <div className="card-title"><Icon name="target" size={18} /> Discoveries <span className="faint small">{found.size}/{CHECKS.length}</span></div>
-          <ul className="checklist">
-            {CHECKS.map((c) => (
-              <li key={c.id} className={found.has(c.id) ? 'done' : ''}>
-                <span className="box">{found.has(c.id) && <Icon name="check" size={14} />}</span>{c.text}
-              </li>
-            ))}
-          </ul>
+          <Checklist items={CHECKS} done={found} tipFor={hint.level ? hint.next : null} tip={hint.next ? tips[hint.next] : undefined} />
+          {!allDone && (
+            <div className="row" style={{ marginTop: 12 }}>
+              <HintButton small level={hint.level} max={hint.max} onClick={hint.ask} nudge={hint.nudge} label="Stuck? Hint" />
+            </div>
+          )}
           <button className="btn gold block" style={{ marginTop: 14 }} disabled={!allDone || submit.isPending}
             onClick={() => submit.mutate({ data: { discovered: [...found] } }, { onSuccess: ({ reward }) => onReward(reward, { graded: false, subtitle: 'You know your vertices from your edges.' }) })}>
             <Icon name="check" /> Finish exploring
