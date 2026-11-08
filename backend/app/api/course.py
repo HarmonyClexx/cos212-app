@@ -2,10 +2,11 @@
 
 Quiz attempts are server-side sessions:
     POST /activities/{id}/attempts      -> open an attempt, receive sanitised items
+    POST /attempts/{aid}/hint           -> (formative only) ask for the next level of help
     POST /attempts/{aid}/check          -> (formative only) grade one item, tiered feedback
     POST /attempts/{aid}/finish         -> close, score, award XP / badges / mastery
-so the number of tries per item - which drives the scaffolding - is recorded by the
-server, not trusted from the browser.
+so the number of tries and hints per item - which drive the scaffolding and the credit - are
+recorded by the server, not trusted from the browser.
 """
 
 from typing import Any
@@ -17,14 +18,14 @@ from sqlalchemy.orm import Session
 from app.content.assessments import ASSESSMENTS
 from app.content.course import ACTIVITIES, MODULES_BY_SLUG, OBJECTIVES
 from app.content.graphs import GRAPHS
-from app.content.schema import Activity, Module
+from app.content.schema import Activity, Item, Module
 from app.core.db import get_db
 from app.core.security import get_current_user
 from app.engine.graph import Graph
-from app.engine.replay import TraceAction, grade_trace
+from app.engine.replay import HINT_COST, TraceAction, grade_trace
 from app.models import Attempt, User
 from app.services.gamification import record_result, stars_for_score
-from app.services.grading import expected_answer, grade_item, public_item
+from app.services.grading import MAX_HINT_LEVEL, expected_answer, grade_item, hint_content, public_item
 from app.services.progress import mastery_map, mastery_report, module_states, progress_map, recommendations
 
 router = APIRouter(tags=["course"])
@@ -32,6 +33,9 @@ router = APIRouter(tags=["course"])
 LESSON_KINDS = {"inspect", "represent", "demo", "compare"}
 INSPECT_CHECKLIST = {"vertex", "edge", "directed", "directed-edge", "degree"}
 FORMATIVE_TRY_CREDIT = {1: 1.0, 2: 0.7, 3: 0.4}
+# A hint (HINT_COST, shared with traces) is cheaper than a wrong guess (1.0 -> 0.7), so asking
+# for help always beats guessing. Getting there yourself is worth at least MIN_CREDIT.
+MIN_CREDIT = 0.2
 
 
 # --- helpers ---------------------------------------------------------------------------------
@@ -150,6 +154,38 @@ class CheckIn(BaseModel):
     reveal: bool = False
 
 
+class HintIn(BaseModel):
+    item_id: str
+
+
+def _credit_if_correct(tries: int, hints: int) -> float:
+    return round(max(MIN_CREDIT, FORMATIVE_TRY_CREDIT.get(tries, MIN_CREDIT) - HINT_COST * hints), 3)
+
+
+def _help_level(st: dict[str, Any]) -> int:
+    """Scaffolding already shown for an unresolved item: wrong tries and hint requests both count."""
+    return min(3, max(st["tries"], st["hint_level"]))
+
+
+def _formative_item(att: Attempt, activity: Activity, item_id: str) -> tuple[Item, dict[str, Any]]:
+    assessment = ASSESSMENTS[activity.config["assessment"]]
+    if assessment.mode != "formative":
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "No feedback during the final trial")
+    item = next((i for i in assessment.items if i.id == item_id), None)
+    if item is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Unknown item")
+    st = {"tries": 0, "correct": False, "revealed": False, "hints": 0, "hint_level": 0, "type": item.type,
+          **att.payload.get("items", {}).get(item.id, {})}
+    if st["correct"] or st["revealed"]:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Item already resolved")
+    return item, st
+
+
+def _save_item(att: Attempt, item: Item, st: dict[str, Any], db: Session) -> None:
+    att.payload = {**att.payload, "items": {**att.payload.get("items", {}), item.id: st}}
+    db.commit()
+
+
 class FinishIn(BaseModel):
     answers: dict[str, Any] | None = None
 
@@ -178,21 +214,29 @@ def start_attempt(activity_id: str, user: User = Depends(get_current_user),
             "items": [public_item(i) for i in assessment.items]}
 
 
+@router.post("/attempts/{aid}/hint")
+def hint(aid: int, body: HintIn, user: User = Depends(get_current_user),
+         db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Next level of help, before or between tries. Only help the learner hasn't seen is charged."""
+    att, activity = _open_attempt(aid, user, db)
+    item, st = _formative_item(att, activity, body.item_id)
+    seen = min(MAX_HINT_LEVEL, _help_level(st))
+    charged = seen < MAX_HINT_LEVEL
+    level = min(MAX_HINT_LEVEL, seen + 1)
+    if charged:
+        st["hints"] += 1
+        st["hint_level"] = level
+        _save_item(att, item, st, db)
+    return {"item_id": item.id, "level": level, "max_level": MAX_HINT_LEVEL, "charged": charged,
+            "hints": st["hints"], "worth": _credit_if_correct(st["tries"] + 1, st["hints"]),
+            **hint_content(item, level)}
+
+
 @router.post("/attempts/{aid}/check")
 def check_item(aid: int, body: CheckIn, user: User = Depends(get_current_user),
                db: Session = Depends(get_db)) -> dict[str, Any]:
     att, activity = _open_attempt(aid, user, db)
-    assessment = ASSESSMENTS[activity.config["assessment"]]
-    if assessment.mode != "formative":
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "No feedback during the final trial")
-    item = next((i for i in assessment.items if i.id == body.item_id), None)
-    if item is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Unknown item")
-
-    items = dict(att.payload.get("items", {}))
-    st = dict(items.get(item.id, {"tries": 0, "correct": False, "revealed": False, "type": item.type}))
-    if st["correct"] or st["revealed"]:
-        raise HTTPException(status.HTTP_409_CONFLICT, "Item already resolved")
+    item, st = _formative_item(att, activity, body.item_id)
 
     if body.reveal:
         if st["tries"] < 3:
@@ -204,22 +248,21 @@ def check_item(aid: int, body: CheckIn, user: User = Depends(get_current_user),
         st["tries"] += 1
         st["correct"] = grade.correct
         st["last_score"] = grade.score
-    items[item.id] = st
-    att.payload = {**att.payload, "items": items}
-    db.commit()
+    _save_item(att, item, st, db)
 
-    # Progressive scaffolding (Design 2.6): hint -> explanation -> worked answer.
-    tier = 0 if grade and grade.correct else min(st["tries"], 3)
+    # Progressive scaffolding (Design 2.6): nudge -> the idea in full + visual cue -> worked answer.
+    correct = bool(grade and grade.correct)
+    tier = 0 if correct else _help_level(st)
     resp: dict[str, Any] = {
-        "item_id": item.id, "tries": st["tries"], "correct": bool(grade and grade.correct),
+        "item_id": item.id, "tries": st["tries"], "hints": st["hints"], "correct": correct,
         "score": grade.score if grade else 0.0, "feedback": grade.feedback if grade else "Here's the worked answer.",
         "detail": grade.detail if grade else {}, "tier": tier, "can_reveal": not st["correct"] and st["tries"] >= 3,
+        "worth": 0.0 if body.reveal else _credit_if_correct(st["tries"] if correct else st["tries"] + 1, st["hints"]),
     }
-    if tier >= 1:
-        resp["hint"] = item.hint
-    if tier >= 2 or (grade and grade.correct) or body.reveal:
+    if tier >= 1 and not body.reveal:
+        resp |= hint_content(item, min(tier, MAX_HINT_LEVEL))
+    if correct or body.reveal:
         resp["explanation"] = item.explanation
-    if body.reveal or (grade and grade.correct):
         resp["answer"] = expected_answer(item)
     return resp
 
@@ -236,10 +279,11 @@ def finish_attempt(aid: int, body: FinishIn, user: User = Depends(get_current_us
         state = att.payload.get("items", {})
         for item in assessment.items:
             st = state.get(item.id, {})
-            credit = 0.0 if st.get("revealed") or not st.get("correct") else FORMATIVE_TRY_CREDIT.get(st["tries"], 0.2)
+            ok = st.get("correct") and not st.get("revealed")
+            credit = _credit_if_correct(st["tries"], st.get("hints", 0)) if ok else 0.0
             per_objective.setdefault(item.objective, []).append(credit)
             review.append({"item_id": item.id, "objective": item.objective, "score": credit,
-                           "tries": st.get("tries", 0), "correct": bool(st.get("correct")),
+                           "tries": st.get("tries", 0), "hints": st.get("hints", 0), "correct": bool(st.get("correct")),
                            "revealed": bool(st.get("revealed"))})
         unresolved = [r for r in review if not r["correct"] and not r["revealed"]]
         if unresolved:

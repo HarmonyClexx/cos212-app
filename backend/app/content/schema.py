@@ -24,6 +24,7 @@ class Criterion(BaseModel):
     id: str
     descriptor: str
     any_of: list[str]
+    nudge: str = ""  # question shown while the criterion is unmet: points at the gap, never the wording
 
 
 class Item(BaseModel):
@@ -41,8 +42,12 @@ class Item(BaseModel):
     rubric: list[Criterion] | None = None
     pass_criteria: int = 2
     model_answer: str | None = None
-    hint: str  # tier-1 nudge after the first wrong attempt
-    explanation: str  # tier-2 explanation / shown with the answer
+    # Progressive scaffolding (Design 2.6). Each level is reached by asking for a hint or by a
+    # wrong try, whichever comes first; the worked answer itself needs three tries.
+    hint: str  # level 1: a short nudge
+    hint2: str | None = None  # level 2: the idea explained in full - still not the answer
+    focus: list[str] = Field(default_factory=list)  # level 2 visual cue: vertices to ring on the graph
+    explanation: str  # worked explanation, shown with the answer (once correct or revealed)
 
 
 class Assessment(BaseModel):

@@ -173,21 +173,38 @@ export interface GradeDetail {
   wrong_rows?: string[]
   correct_prefix?: number
   looks_like?: string
-  criteria?: { id: string; descriptor: string; met: boolean }[]
+  criteria?: { id: string; descriptor: string; met: boolean; nudge?: string }[]
 }
 
 export interface CheckResult {
   item_id: string
   tries: number
+  hints: number
   correct: boolean
   score: number
   feedback: string
   detail: GradeDetail
   tier: number
   can_reveal: boolean
+  /** Credit this question earns (if correct) or would earn on the next correct try. */
+  worth: number
   hint?: string
+  /** Level-2 visual cue: vertices to ring on the graph. */
+  focus?: string[]
   explanation?: string
   answer?: unknown
+}
+
+export interface HintResult {
+  item_id: string
+  level: number
+  max_level: number
+  /** False when this level was already shown (asking again is free). */
+  charged: boolean
+  hints: number
+  worth: number
+  hint: string
+  focus: string[]
 }
 
 export interface ReviewRow {

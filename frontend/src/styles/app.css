@@ -243,6 +243,23 @@ textarea.input { height: auto; min-height: 120px; padding: 12px 14px; resize: ve
 .tier-dots i.on { background: var(--hint); }
 @keyframes fb-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 
+/* ---------- hints ---------- */
+.btn.hint .tier-dots { margin-left: 2px; }
+.btn.hint .tier-dots i { background: color-mix(in srgb, var(--hint) 28%, transparent); }
+.btn.hint .tier-dots i.on { background: var(--hint); }
+/* "Stuck?" - a soft ring that pulses outward from the hint button. */
+.btn.hint.nudge { animation: hint-nudge 1.8s var(--ease-out) infinite; border-color: var(--hint); }
+@keyframes hint-nudge {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--hint) 55%, transparent); }
+  70%, 100% { box-shadow: 0 0 0 12px transparent; }
+}
+.hint-note { font-size: 13px; color: var(--ink-2); display: flex; gap: 6px; align-items: center; }
+.hint-note b { color: var(--ink); font-variant-numeric: tabular-nums; }
+.checklist .tip { align-items: flex-start; margin: -2px 0 2px 32px; font-size: 13px; color: var(--ink-2); padding: 8px 10px; border-radius: 10px; background: var(--hint-soft); border: 1px solid color-mix(in srgb, var(--hint) 30%, transparent); animation: fb-in .3s var(--ease-out) both; }
+.checklist .tip svg { color: var(--hint); flex: none; margin-top: 2px; }
+.criteria .nudge { display: block; font-size: 12.5px; color: var(--hint); margin-top: 2px; }
+.tabs.nudge { outline: 2px solid var(--hint); outline-offset: 2px; }
+
 /* ---------- activity layouts ---------- */
 .act-grid { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 18px; align-items: start; }
 .act-grid.wide-side { grid-template-columns: minmax(0, 1fr) 360px; }
@@ -471,4 +488,5 @@ textarea.input { height: auto; min-height: 120px; padding: 12px 14px; resize: ve
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+  .btn.hint.nudge { box-shadow: 0 0 0 3px color-mix(in srgb, var(--hint) 50%, transparent); }
 }

@@ -79,7 +79,8 @@ def test_formative_quiz_flow_and_no_answer_leak(client: TestClient, monkeypatch:
     r = client.post(f"/api/attempts/{aid}/check", headers=h, json={"item_id": "a1", "answer": ["A"]}).json()
     assert not r["correct"] and r["tier"] == 1 and "hint" in r and "explanation" not in r
     r = client.post(f"/api/attempts/{aid}/check", headers=h, json={"item_id": "a1", "answer": ["B"]}).json()
-    assert r["tier"] == 2 and "explanation" in r
+    # Level 2 is the idea in full plus a visual cue; the worked explanation waits for the answer.
+    assert r["tier"] == 2 and r["focus"] == ["D"] and "explanation" not in r
     assert client.post(f"/api/attempts/{aid}/check", headers=h,
                        json={"item_id": "a1", "reveal": True}).status_code == 403
     r = client.post(f"/api/attempts/{aid}/check", headers=h,
@@ -99,6 +100,46 @@ def test_formative_quiz_flow_and_no_answer_leak(client: TestClient, monkeypatch:
     assert done["reward"]["stars"] == 3
     m1 = next(m for m in done["mastery"] if m["objective"] == 1)
     assert m1["value"] == pytest.approx(0.9) and m1["evidence"] == 1
+
+
+def test_hints_on_request_are_levelled_and_cheap(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "unlock_all", True)
+    h = register(client)
+    start = client.post("/api/activities/m1-quiz/attempts", headers=h).json()
+    assert all("hint" not in i and "hint2" not in i and "focus" not in i for i in start["items"])
+    aid = start["attempt_id"]
+
+    def ask(iid: str) -> dict:
+        return client.post(f"/api/attempts/{aid}/hint", headers=h, json={"item_id": iid}).json()
+
+    # a3, before any try: nudge first, then the full idea; asking again is free and repeats level 2.
+    r = ask("a3")
+    assert (r["level"], r["charged"], r["worth"]) == (1, True, 0.85) and r["hint"] and r["focus"] == []
+    r = ask("a3")
+    assert (r["level"], r["charged"], r["worth"]) == (2, True, 0.7)
+    r = ask("a3")
+    assert (r["level"], r["charged"], r["hints"], r["worth"]) == (2, False, 2, 0.7)
+
+    # a1: one wrong try already showed level 1, so a hint jumps to level 2 with its visual cue.
+    client.post(f"/api/attempts/{aid}/check", headers=h, json={"item_id": "a1", "answer": ["A"]})
+    r = ask("a1")
+    assert (r["level"], r["focus"], r["worth"]) == (2, ["D"], 0.55)
+
+    answers = {"a1": ["B", "C", "E"], "a2": ["A-B", "A-C"], "a3": [0], "a4": [1], "a5": ["B", "C"], "a6": [2]}
+    for iid, ans in answers.items():
+        assert client.post(f"/api/attempts/{aid}/check", headers=h,
+                           json={"item_id": iid, "answer": ans}).json()["correct"]
+    assert client.post(f"/api/attempts/{aid}/hint", headers=h, json={"item_id": "a1"}).status_code == 409
+
+    done = client.post(f"/api/attempts/{aid}/finish", headers=h, json={}).json()
+    # a1: second try with one hint (0.7 - 0.15) · a3: first try with two hints (1.0 - 0.3) · four clean
+    assert done["result"]["score"] == pytest.approx((0.55 + 0.7 + 4) / 6, abs=1e-3)
+    assert {r["item_id"]: r["hints"] for r in done["result"]["review"]}["a3"] == 2
+
+    final = client.post("/api/activities/m6-final/attempts", headers=h).json()
+    assert client.post(f"/api/attempts/{final['attempt_id']}/hint", headers=h,
+                       json={"item_id": "f1"}).status_code == 403
 
 
 def test_trace_and_xp_is_not_farmable(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
