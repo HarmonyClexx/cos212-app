@@ -16,7 +16,7 @@ export const useLeaderboard = () =>
   useQuery({ queryKey: ['leaderboard'], queryFn: () => api<{ top: LeaderRow[]; me: LeaderRow }>('/leaderboard') })
 
 /** Anything that changes progress invalidates the learner-facing caches. */
-function useProgressInvalidation() {
+export function useProgressInvalidation() {
   const qc = useQueryClient()
   return () => {
     qc.invalidateQueries({ queryKey: ['me'] })
@@ -36,7 +36,10 @@ export function useSubmitActivity(activityId: string) {
 }
 
 export function useStartAttempt(activityId: string) {
-  return useMutation({ mutationFn: () => api<AttemptStart>(`/activities/${activityId}/attempts`, { body: {} }) })
+  return useMutation({
+    mutationFn: (body: { new_attempt?: boolean } = {}) =>
+      api<AttemptStart>(`/activities/${activityId}/attempts`, { body }),
+  })
 }
 
 export function useCheckItem(attemptId: number | undefined) {

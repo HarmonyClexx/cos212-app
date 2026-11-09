@@ -13,6 +13,7 @@ import type { ActivityProps, RewardMeta } from '../activities/shared'
 import { Icon } from '../components/Icon'
 import { RewardModal } from '../components/RewardModal'
 import { BLOOM_COLORS, Stars } from '../components/bits'
+import { flushQuizDraft } from '../activities/useQuizDraft'
 
 const COMPONENTS: Record<Activity['kind'], (p: ActivityProps) => JSX.Element> = {
   maze: MazeActivity,
@@ -103,7 +104,9 @@ export function ModulePage() {
         <nav className="steps" aria-label="Activities in this module">
           {acts.map((a, i) => (
             <button key={a.id} className={`step ${a.id === current.id ? 'active' : ''} ${a.state.completed ? 'done' : ''}`}
-              disabled={!a.state.unlocked} onClick={() => navigate(`/learn/${mod.slug}/${a.id}`)} aria-current={a.id === current.id ? 'step' : undefined}>
+              disabled={!a.state.unlocked}
+              onClick={() => void flushQuizDraft().then(() => navigate(`/learn/${mod.slug}/${a.id}`)).catch(() => {})}
+              aria-current={a.id === current.id ? 'step' : undefined}>
               <span className="num">{a.state.completed ? <Icon name="check" size={16} /> : !a.state.unlocked ? <Icon name="lock" size={14} /> : i + 1}</span>
               <span>
                 <span className="s-title">{a.title}</span>

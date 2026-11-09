@@ -156,12 +156,27 @@ export interface QuizItem {
   start: string | null
   pass_criteria: number
   criteria?: string[]
+  reflection_prompt?: string | null
 }
 
 export type Answer = number[] | string[] | Record<string, string[]> | string
 
 export interface AttemptStart {
   attempt_id: number
+  user_id: number
+  status: 'open' | 'closed' | 'superseded'
+  revision: number
+  compatible: boolean
+  notice?: string
+  last_draft_request?: string
+  answers: Record<string, Answer>
+  reflections: Record<string, string>
+  current_item: string
+  results: Record<string, CheckResult>
+  hints: Record<string, HintResult>
+  revealed: Record<string, boolean>
+  last: Record<string, 'hint' | 'check'>
+  report: Omit<FinishResult, 'reward'> | null
   mode: 'formative' | 'summative'
   pass_mark: number
   items: QuizItem[]
@@ -177,6 +192,7 @@ export interface GradeDetail {
 }
 
 export interface CheckResult {
+  revision: number
   item_id: string
   tries: number
   hints: number
@@ -196,6 +212,7 @@ export interface CheckResult {
 }
 
 export interface HintResult {
+  revision: number
   item_id: string
   level: number
   max_level: number
@@ -222,6 +239,7 @@ export interface ReviewRow {
 }
 
 export interface FinishResult {
+  revision: number
   result: { score: number; passed?: boolean; review: ReviewRow[]; objectives: Record<string, number> }
   reward: Reward
   mastery: MasteryRow[]

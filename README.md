@@ -45,6 +45,28 @@ npm run dev
 
 Ports use the course code to avoid clashing with other services: API **8750**, Postgres **5750**, Docker web **4750**.
 
+### Quiz saving and recovery
+
+Unfinished quizzes are saved to the signed-in account: answers, optional reflections, current
+question and previously disclosed feedback/help resume after refresh, navigation or signing back
+in. **Saved to your account** confirms acknowledgement by the server. **Saving** is still pending;
+**Not saved** offers Retry and keeps your input. When browser storage is available, pending drafts
+also have an account/attempt-scoped local fallback. Edits the server never received are not
+guaranteed to follow you to another browser.
+If saving fails when signing out, the app warns before letting you sign out anyway.
+
+Opening a completed quiz does not start another attempt. Use **Start another attempt** deliberately;
+compatible final reports remain available when revisiting the final quiz. Existing completed scores
+are preserved, not regraded. Legacy unfinished attempts without resumable state are retained as
+superseded records; the app explains when it must start a new one.
+
+Quiz-start failures offer **Retry**. Retrying an uncertain save/check/hint/submission reuses its
+request ID instead of charging help or awarding rewards twice. If another tab changes the attempt,
+the stale tab must reload the saved state rather than overwrite it.
+
+These repairs extend the existing attempt JSON data; no new database migration or reset is needed.
+Restart the backend/frontend if you are not running their development reload modes.
+
 ---
 
 ## How the design document maps to the app
@@ -54,16 +76,16 @@ Ports use the course code to avoid clashing with other services: API **8750**, P
 | **Problem-centred activation** (Merrill / Gagné 3): start from intuition, e.g. a maze | Module 0, *The Labyrinth*: fog-of-war maze with a thread and chalk; the map is then revealed as a graph and each tool is named |
 | **Inform learners of objectives** (Gagné 2) | Every module header shows its objective, CS2023 skill level (Explain / Apply / Evaluate) and the outcome statement |
 | **Frame 1:** canvas + inspector, click to reveal definitions | `InspectActivity`: click vertices/edges, toggle directed, discovery checklist |
-| **Frame 2:** graph to adjacency list (drag and drop) | `RepresentActivity` (linked list / matrix / drawing) and the `adjacency` quiz item (drag *or* tap) |
+| **Frame 2:** graph to adjacency list | `RepresentActivity` (linked list / matrix / drawing) and the `adjacency` quiz item (drag, tap, or select a vertex and keyboard-activate a row's Add button) |
 | **Frame 3:** "Click the next node DFS will visit", call stack + visited panel | `TraceActivity` with auto-backtracking |
 | **Frame 4:** dead end, "What action must DFS take?", learner pops the stack | `TraceActivity` in manual mode, with a **Backtrack (pop)** button on the stack |
 | **Frame 4:** side-by-side DFS vs BFS replay | `CompareActivity`: synchronised race, stack vs queue |
 | **Progressive scaffolding** (Design 2.6): hint, then explanation + visual cue, then worked step | A **Hint** button in every activity (see below). Level 1 = a nudge, level 2 = the idea in full with the relevant vertices ringed, level 3 = "show me" after three tries. In traces: `engine/tracer.ts`; in quizzes: `/attempts/{id}/hint` and `/check` |
 | **Consistent tie-break** (alphabetical) | `engine/graph.py` and `engine/graph.ts` |
 | **Working-memory constraint**: externalise the stack and visited list | Stack and visited panels are always on screen; the golden *thread* on the graph **is** the stack |
-| **Formative assessment** (CAI / simulation / concept mapping) | Five formative quizzes with retries; item types: MCQ, tap-the-graph, adjacency builder, click-the-order, short answer |
-| **Summative criterion-referenced test** | Module 6, *Face the Minotaur*: 10 items on *unseen* graphs, a per-objective report, pass mark 60% |
-| **Short-answer rubric** (pass / differentiated descriptors) | Criteria are shown to the learner up front; pass = 2 of 4, distinction = 4 of 4 |
+| **Formative assessment** (CAI / simulation / concept mapping) | Five formative quizzes with retries; item types: MCQ, tap-the-graph, adjacency builder and click-the-order |
+| **Summative criterion-referenced test** | Module 6, *Face the Minotaur*: 10 items, a per-objective report, pass mark 60% |
+| **DFS/BFS explanation assessment** | Structured reason choices associate stack/LIFO with depth-first exploration and queue/FIFO with level-order exploration. Optional written reflection is saved but explicitly ungraded; keyword presence is not treated as understanding |
 | **Adaptive system** recommending revision | Per-objective mastery (running average, then EMA) and "Revise: …" recommendations below 70% |
 | **Flow** (Csíkszentmihályi): immediate feedback, balanced challenge | Instant per-click feedback, streak counter, difficulty ramp (tree → cycle → 8-node network) |
 | **Malone & Lepper**: challenge, curiosity, fantasy, control | Stars, XP, levels, 10 badges, leaderboard · Theseus/Minotaur framing · learner drives every step |
@@ -81,7 +103,6 @@ Hint button pulses after two slips or a quiet spell (20–30 s).
 | Inspect / Represent | **Stuck? Hint** explains the next unfinished discovery and points at the switch or vertex it needs | Free |
 | Trace challenges | Three levels: look at the top of the stack → the unvisited neighbours, ringed → "Show me this step" | 15% of a step per hint; 3★ needs none, 2★ stays in reach. The button stops once there's nothing new to say |
 | Practice quizzes | Two levels before any answer, then "Show me the answer" after three tries | 15% of the question per hint, half the price of a wrong guess (30%), so asking always beats guessing. "Now worth …" shows the price as you go. Getting there yourself is always worth ≥ 20% |
-| Short answers | Each unmet rubric criterion gets a guiding question (e.g. *"Which data structure holds BFS's frontier?"*), never the keywords | Free |
 | Final trial | None. It's the criterion-referenced summative test | — |
 
 Hint costs are enforced **server-side** (one `HINT_COST` in `engine/replay.py`, shared by traces and quizzes), and
@@ -110,7 +131,7 @@ backend/
   app/
     engine/        graph.py, traversal.py (DFS/BFS traces), replay.py (server-side trace grading)
     content/       graphs.py, course.py (modules + objectives), assessments.py (quiz banks)
-    services/      grading.py (5 item types + rubric), gamification.py (XP, levels, badges,
+    services/      grading.py (structured item grading), gamification.py (XP, levels, badges,
                    streaks, mastery), progress.py (unlocking, recommendations)
     api/           auth.py, me.py (profile, leaderboard), course.py (content, submit, quiz attempts)
     models.py      users, activity_progress, attempts, mastery, user_badges
@@ -165,6 +186,12 @@ recomputed in `tests/test_engine.py`, so a typo in course content fails the buil
 ## Tests
 
 ```bash
-cd backend && .venv/bin/pytest          # 31 tests: engine, content integrity, API flows
+cd backend && .venv/bin/pytest          # engine, content integrity, quiz recovery and API flows
 cd frontend && npm run typecheck && npm run build
 ```
+
+The API tests use an isolated in-memory SQLite database by default. To exercise PostgreSQL row
+locking and concurrent starts/saves/hints/submissions, create a disposable database whose name
+starts with `ariadne_test_`, set `ARIADNE_TEST_DATABASE_URL` to its connection URL, and run
+`pytest tests/test_api.py` from `backend/`. The tests create and drop tables in that test database;
+never point this variable at your application database. The concurrency test is skipped on SQLite.

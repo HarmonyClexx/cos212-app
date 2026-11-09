@@ -4,15 +4,18 @@
 // end, then a criterion-referenced report per objective with revision recommendations.
 
 import { useEffect, useRef, useState } from 'react'
+import { useMutation } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { useCheckItem, useFinishAttempt, useHint, useStartAttempt } from '../api/hooks'
+import { ApiError } from '../api/client'
+import { useProgressInvalidation, useStartAttempt } from '../api/hooks'
 import type { Answer, AttemptStart, CheckResult, FinishResult, HintResult, MasteryRow, QuizItem } from '../api/types'
 import { Icon } from '../components/Icon'
 import { FeedbackBox, HintButton, Meter, masteryStatus } from '../components/bits'
 import type { Feedback } from '../engine/tracer'
 import { useIdle } from '../lib/useIdle'
-import { ItemView, emptyAnswer, isAnswered } from './items/QuizItems'
+import { ItemView, isAnswered } from './items/QuizItems'
 import type { ActivityProps } from './shared'
+import { useQuizDraft, type QuizDraft } from './useQuizDraft'
 
 const OBJ_NAMES: Record<number, string> = {
   1: 'Graph concepts', 2: 'Representation', 3: 'DFS traversal', 4: 'State & backtracking', 5: 'DFS vs BFS',
@@ -26,27 +29,70 @@ export function QuizActivity({ activity, onReward }: ActivityProps) {
   useEffect(() => {
     if (started.current) return
     started.current = true
-    start.mutate(undefined, { onSuccess: setAttempt })
+    start.mutate({}, { onSuccess: setAttempt })
   }, [start])
 
-  if (start.isError) return <div className="card empty-state">Couldn't start the quiz: {(start.error as Error).message}</div>
+  if (start.isError) return (
+    <div className="card empty-state" role="alert">
+      <p>Couldn't open the quiz: {(start.error as Error).message}</p>
+      {(!(start.error instanceof ApiError) || start.error.status >= 500) && (
+        <button className="btn primary" style={{ marginTop: 12 }}
+          onClick={() => start.mutate(start.variables ?? {}, { onSuccess: setAttempt })}>Retry</button>
+      )}
+    </div>
+  )
   if (!attempt) return <div className="skeleton" style={{ height: 420 }} />
+  if (attempt.status === 'closed') return (
+    <div className="stack-v">
+      <div className="card">
+        <h3>Quiz submitted · {Math.round((attempt.report?.result.score ?? 0) * 100)}%</h3>
+        <p className="muted" style={{ marginTop: 8 }}>
+          {attempt.compatible ? 'Your previous result is saved.' : 'This result was recorded under an earlier quiz format and has not been regraded.'}
+        </p>
+        <button className="btn primary" style={{ marginTop: 12 }} disabled={start.isPending}
+          onClick={() => start.mutate({ new_attempt: true }, { onSuccess: setAttempt })}>Start another attempt</button>
+      </div>
+      {attempt.compatible && attempt.mode === 'summative' && attempt.report && (
+        <SummativeReport items={attempt.items} answers={attempt.answers} reflections={attempt.reflections}
+          report={attempt.report} title={activity.title} />
+      )}
+    </div>
+  )
   return attempt.mode === 'formative'
-    ? <Formative attempt={attempt} onReward={onReward} />
-    : <Summative attempt={attempt} onReward={onReward} activityTitle={activity.title} />
+    ? <Formative key={attempt.attempt_id} attempt={attempt} onReward={onReward} />
+    : <Summative key={attempt.attempt_id} attempt={attempt} onReward={onReward} activityTitle={activity.title} />
+}
+
+function DraftStatus({ draft }: { draft: QuizDraft }) {
+  return (
+    <div className="row wrap small" style={{ marginBottom: 16 }} role="status">
+      <span className={draft.error ? 'error-text' : 'muted'}>
+        {draft.conflict ? 'The saved quiz changed. Reload to reconcile this tab; its unsaved edits will not overwrite the saved state.'
+          : draft.uncertain ? 'The last action could not be confirmed. Retry that action before editing or leaving.'
+            : draft.error ? `Not saved: ${draft.error}`
+              : draft.status === 'saving' ? 'Saving…' : 'Saved to your account'}
+      </span>
+      {draft.conflict
+        ? <button className="btn sm" onClick={() => window.location.reload()}>Reload saved quiz</button>
+        : draft.error && !draft.uncertain && <button className="btn sm" disabled={draft.busy}
+          onClick={() => void draft.flush().catch(() => {})}>Retry save</button>}
+    </div>
+  )
 }
 
 function Formative({ attempt, onReward }: { attempt: AttemptStart; onReward: ActivityProps['onReward'] }) {
   const items = attempt.items
-  const [idx, setIdx] = useState(0)
-  const [answers, setAnswers] = useState<Record<string, Answer>>(() => Object.fromEntries(items.map((i) => [i.id, emptyAnswer(i)])))
-  const [results, setResults] = useState<Record<string, CheckResult>>({})
-  const [revealed, setRevealed] = useState<Record<string, boolean>>({})
-  const [hints, setHints] = useState<Record<string, HintResult>>({})
-  const [last, setLast] = useState<Record<string, 'hint' | 'check'>>({})
-  const check = useCheckItem(attempt.attempt_id)
-  const hint = useHint(attempt.attempt_id)
-  const finish = useFinishAttempt(attempt.attempt_id)
+  const draft = useQuizDraft(attempt)
+  const { idx, setIdx, answers } = draft
+  const [results, setResults] = useState(attempt.results)
+  const [revealed, setRevealed] = useState(attempt.revealed)
+  const [hints, setHints] = useState(attempt.hints)
+  const [last, setLast] = useState(attempt.last)
+  const invalidate = useProgressInvalidation()
+  const check = useMutation({ mutationFn: (body: { item_id: string; answer?: Answer; reveal: boolean }) =>
+    draft.perform<CheckResult>('check', body) })
+  const hint = useMutation({ mutationFn: (body: { item_id: string }) => draft.perform<HintResult>('hint', body) })
+  const finish = useMutation({ mutationFn: () => draft.perform<FinishResult>('finish', {}), onSuccess: invalidate })
 
   const item = items[idx]
   const res = results[item.id]
@@ -94,27 +140,31 @@ function Formative({ attempt, onReward }: { attempt: AttemptStart; onReward: Act
 
   return (
     <div className="card">
+      {attempt.notice && <p role="status">{attempt.notice}</p>}
+      <DraftStatus draft={draft} />
       <div className="quiz-top">
         <span className="chip brand">Formative · retries allowed</span>
         <div className="pips" aria-label="Questions">
           {items.map((it, i) => (
             <button key={it.id} className={`pip ${i === idx ? 'current' : results[it.id]?.correct ? 'done' : revealed[it.id] ? 'revealed' : ''}`}
-              onClick={() => setIdx(i)} aria-label={`Question ${i + 1}`} />
+              onClick={() => setIdx(i)} disabled={draft.busy || draft.uncertain || draft.conflict} aria-label={`Question ${i + 1}`} />
           ))}
         </div>
         <span className="spacer" />
         <span className="faint small">Question {idx + 1} of {items.length}</span>
       </div>
 
-      <ItemView key={item.id} item={item} value={answers[item.id]} locked={!!isResolved}
-        onChange={(v) => setAnswers((a) => ({ ...a, [item.id]: v }))}
+      <ItemView key={item.id} item={item} value={answers[item.id]} locked={!!isResolved || draft.busy || draft.uncertain || draft.conflict}
+        onChange={(v) => draft.setAnswer(item.id, v)}
+        reflection={draft.reflections[item.id]} onReflectionChange={(text) => draft.setReflection(item.id, text)}
         answer={isResolved ? res?.answer : undefined} detail={res && !res.correct ? res.detail : undefined} focus={focus} />
 
       <div style={{ marginTop: 16 }}>
         {fb && (
           <FeedbackBox fb={fb}>
             {!showingHint && res && !res.correct && !revealed[item.id] && res.can_reveal && (
-              <button className="btn sm hint" style={{ marginTop: 10 }} onClick={() => doCheck(true)} disabled={check.isPending}>
+              <button className="btn sm hint" style={{ marginTop: 10 }} onClick={() => doCheck(true)}
+                disabled={draft.busy || draft.conflict || (draft.uncertain && !check.isError)}>
                 <Icon name="eye" size={16} /> Show me the answer
               </button>
             )}
@@ -123,7 +173,8 @@ function Formative({ attempt, onReward }: { attempt: AttemptStart; onReward: Act
       </div>
 
       <div className="controls" style={{ marginTop: 16 }}>
-        <button className="btn ghost" onClick={() => setIdx((i) => Math.max(0, i - 1))} disabled={idx === 0}><Icon name="chevronLeft" /> Back</button>
+        <button className="btn ghost" onClick={() => setIdx(Math.max(0, idx - 1))}
+          disabled={idx === 0 || draft.busy || draft.uncertain || draft.conflict}><Icon name="chevronLeft" /> Back</button>
         <span className="spacer" />
         {(check.isError || hint.isError) && <span className="error-text">{((check.error ?? hint.error) as Error).message}</span>}
         {!isResolved && worth < 1 && (
@@ -132,22 +183,25 @@ function Formative({ attempt, onReward }: { attempt: AttemptStart; onReward: Act
           </span>
         )}
         {!isResolved && (
-          <HintButton level={level} max={2} onClick={askHint} disabled={hint.isPending}
+          <HintButton level={level} max={2} onClick={askHint}
+            disabled={draft.busy || draft.conflict || (draft.uncertain && !hint.isError)}
             nudge={idle || (!!res && !res.correct && level < 2)}
             cost="A hint costs 15% of this question — half the price of a wrong guess." />
         )}
         {!isResolved && (
-          <button className="btn primary" onClick={() => doCheck()} disabled={check.isPending || !isAnswered(item, answers[item.id])}>
-            <Icon name="check" /> Check
+          <button className="btn primary" onClick={() => doCheck()}
+            disabled={draft.busy || draft.conflict || (draft.uncertain && !check.isError) || !isAnswered(item, answers[item.id])}>
+            <Icon name="check" /> {check.isError ? 'Retry check' : 'Check'}
           </button>
         )}
         {isResolved && idx < items.length - 1 && (
-          <button className="btn primary" onClick={() => setIdx(items.findIndex((it, i) => i > idx && !resolved(it)) === -1 ? idx + 1 : items.findIndex((it, i) => i > idx && !resolved(it)))}>
+          <button className="btn primary" disabled={draft.busy || draft.uncertain || draft.conflict}
+            onClick={() => setIdx(items.findIndex((it, i) => i > idx && !resolved(it)) === -1 ? idx + 1 : items.findIndex((it, i) => i > idx && !resolved(it)))}>
             Next <Icon name="arrowRight" />
           </button>
         )}
         {allResolved && (
-          <button className="btn gold" disabled={finish.isPending} onClick={() => finish.mutate(undefined, {
+          <button className="btn gold" disabled={draft.busy || draft.conflict} onClick={() => finish.mutate(undefined, {
             onSuccess: (r) => onReward(r.reward, { graded: true, subtitle: `Score ${Math.round(r.result.score * 100)}% — first-try answers count most.` }),
           })}>
             <Icon name="trophy" /> Finish quiz
@@ -160,11 +214,13 @@ function Formative({ attempt, onReward }: { attempt: AttemptStart; onReward: Act
 
 function Summative({ attempt, onReward, activityTitle }: { attempt: AttemptStart; onReward: ActivityProps['onReward']; activityTitle: string }) {
   const items = attempt.items
-  const [idx, setIdx] = useState(0)
-  const [answers, setAnswers] = useState<Record<string, Answer>>(() => Object.fromEntries(items.map((i) => [i.id, emptyAnswer(i)])))
+  const draft = useQuizDraft(attempt)
+  const { idx, setIdx, answers } = draft
   const [report, setReport] = useState<FinishResult | null>(null)
   const [confirm, setConfirm] = useState(false)
-  const finish = useFinishAttempt(attempt.attempt_id)
+  const invalidate = useProgressInvalidation()
+  const finish = useMutation({ mutationFn: (body: Record<string, Answer>) =>
+    draft.perform<FinishResult>('finish', { answers: body }), onSuccess: invalidate })
   const item = items[idx]
   const answered = items.filter((i) => isAnswered(i, answers[i.id])).length
 
@@ -178,15 +234,18 @@ function Summative({ attempt, onReward, activityTitle }: { attempt: AttemptStart
     },
   })
 
-  if (report) return <SummativeReport items={items} answers={answers} report={report} title={activityTitle} />
+  if (report) return <SummativeReport items={items} answers={answers} reflections={draft.reflections} report={report} title={activityTitle} />
 
   return (
     <div className="card">
+      {attempt.notice && <p role="status">{attempt.notice}</p>}
+      <DraftStatus draft={draft} />
       <div className="quiz-top">
         <span className="chip danger"><Icon name="sword" size={14} /> Summative · no hints</span>
         <div className="pips">
           {items.map((it, i) => (
-            <button key={it.id} className={`pip ${i === idx ? 'current' : isAnswered(it, answers[it.id]) ? 'answered' : ''}`} onClick={() => setIdx(i)} aria-label={`Question ${i + 1}`} />
+            <button key={it.id} className={`pip ${i === idx ? 'current' : isAnswered(it, answers[it.id]) ? 'answered' : ''}`}
+              disabled={draft.busy || draft.uncertain || draft.conflict} onClick={() => setIdx(i)} aria-label={`Question ${i + 1}`} />
           ))}
         </div>
         <span className="spacer" />
@@ -194,15 +253,20 @@ function Summative({ attempt, onReward, activityTitle }: { attempt: AttemptStart
         <span className="faint small">{idx + 1} / {items.length}</span>
       </div>
 
-      <ItemView key={item.id} item={item} value={answers[item.id]} locked={false} onChange={(v) => setAnswers((a) => ({ ...a, [item.id]: v }))} />
+      <ItemView key={item.id} item={item} value={answers[item.id]} locked={draft.busy || draft.uncertain || draft.conflict}
+        onChange={(v) => draft.setAnswer(item.id, v)} reflection={draft.reflections[item.id]}
+        onReflectionChange={(text) => draft.setReflection(item.id, text)} />
 
       <div className="controls" style={{ marginTop: 18 }}>
-        <button className="btn ghost" onClick={() => setIdx((i) => Math.max(0, i - 1))} disabled={idx === 0}><Icon name="chevronLeft" /> Back</button>
+        <button className="btn ghost" onClick={() => setIdx(Math.max(0, idx - 1))}
+          disabled={idx === 0 || draft.busy || draft.uncertain || draft.conflict}><Icon name="chevronLeft" /> Back</button>
         <span className="spacer" />
         <span className="faint small">{answered}/{items.length} answered</span>
         {idx < items.length - 1
-          ? <button className="btn primary" onClick={() => setIdx(idx + 1)}>Next <Icon name="arrowRight" /></button>
-          : <button className="btn gold" onClick={() => (answered < items.length ? setConfirm(true) : submit())} disabled={finish.isPending}><Icon name="sword" /> Submit trial</button>}
+          ? <button className="btn primary" disabled={draft.busy || draft.uncertain || draft.conflict}
+            onClick={() => setIdx(idx + 1)}>Next <Icon name="arrowRight" /></button>
+          : <button className="btn gold" onClick={() => (answered < items.length ? setConfirm(true) : submit())}
+            disabled={draft.busy || draft.conflict}><Icon name="sword" /> {finish.isError ? 'Retry submission' : 'Submit trial'}</button>}
       </div>
       {confirm && (
         <FeedbackBox fb={{ tone: 'warn', tier: 0, title: `${items.length - answered} question(s) unanswered`, body: 'Unanswered questions score zero. Submit anyway?' }}>
@@ -217,7 +281,10 @@ function Summative({ attempt, onReward, activityTitle }: { attempt: AttemptStart
   )
 }
 
-function SummativeReport({ items, answers, report, title }: { items: QuizItem[]; answers: Record<string, Answer>; report: FinishResult; title: string }) {
+function SummativeReport({ items, answers, reflections, report, title }: {
+  items: QuizItem[]; answers: Record<string, Answer>; reflections: Record<string, string>;
+  report: Omit<FinishResult, 'reward'>; title: string
+}) {
   const navigate = useNavigate()
   const { result, recommendations, mastery } = report
   const masteryBy = Object.fromEntries(mastery.map((m) => [m.objective, m])) as Record<number, MasteryRow>
@@ -279,7 +346,8 @@ function SummativeReport({ items, answers, report, title }: { items: QuizItem[];
                 <div style={{ marginTop: 12 }}>
                   {/* Lists and orders show the learner's own attempt with wrong rows/positions marked;
                       the explanation below spells out the correct one. */}
-                  <ItemView item={it} value={answers[it.id]} locked onChange={() => {}} detail={r.detail}
+                  <ItemView item={it} value={answers[it.id] ?? r.your_answer as Answer} locked onChange={() => {}} detail={r.detail}
+                    reflection={reflections[it.id]}
                     answer={['mcq', 'graph_select', 'short_answer'].includes(it.type) ? r.answer : undefined} />
                   {r.feedback && <p className="small" style={{ marginTop: 10 }}><b>{r.feedback}</b></p>}
                   {r.explanation && <p className="small muted" style={{ marginTop: 4 }}>{r.explanation}</p>}

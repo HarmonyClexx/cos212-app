@@ -15,7 +15,9 @@ const queryClient = new QueryClient({
 
 function ScrollToTop() {
   const { pathname } = useLocation()
-  useEffect(() => window.scrollTo({ top: 0 }), [pathname])
+  useEffect(() => {
+    window.scrollTo({ top: 0 })
+  }, [pathname])
   return null
 }
 
@@ -44,7 +46,7 @@ export function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
-        <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <BrowserRouter>
           <Routed />
         </BrowserRouter>
       </AuthProvider>

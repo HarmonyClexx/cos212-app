@@ -4,6 +4,7 @@ import { useAuth } from '../lib/auth'
 import { useTheme } from '../lib/theme'
 import { Icon, Logo } from './Icon'
 import { Meter } from './bits'
+import { flushQuizDraft } from '../activities/useQuizDraft'
 
 export function TopBar() {
   const { logout } = useAuth()
@@ -16,9 +17,9 @@ export function TopBar() {
       <div className="container topbar-inner">
         <NavLink to="/" className="logo" aria-label="Ariadne home"><Logo /><span>Ariadne</span></NavLink>
         <nav className="nav" aria-label="Main">
-          <NavLink to="/" end><Icon name="map" /><span>Map</span></NavLink>
-          <NavLink to="/leaderboard"><Icon name="trophy" /><span>Leaderboard</span></NavLink>
-          <NavLink to="/profile"><Icon name="user" /><span>Profile</span></NavLink>
+          <NavLink to="/" end aria-label="Map"><Icon name="map" /><span>Map</span></NavLink>
+          <NavLink to="/leaderboard" aria-label="Leaderboard"><Icon name="trophy" /><span>Leaderboard</span></NavLink>
+          <NavLink to="/profile" aria-label="Profile"><Icon name="user" /><span>Profile</span></NavLink>
         </nav>
         <div className="hud">
           {me && (
@@ -39,7 +40,10 @@ export function TopBar() {
           <button className="icon-btn" onClick={toggleTheme} aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}>
             <Icon name={theme === 'dark' ? 'sun' : 'moon'} />
           </button>
-          <button className="icon-btn" onClick={logout} aria-label="Sign out" title="Sign out"><Icon name="logout" /></button>
+          <button className="icon-btn" onClick={() => void flushQuizDraft().then(logout).catch(() => {
+            if (window.confirm('Some quiz changes are not saved to your account. Sign out anyway? Pending edits may only be available in this browser.')) logout()
+          })}
+            aria-label="Sign out" title="Sign out"><Icon name="logout" /></button>
         </div>
       </div>
     </header>

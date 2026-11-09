@@ -9,13 +9,16 @@ so the number of tries and hints per item - which drive the scaffolding and the 
 recorded by the server, not trusted from the browser.
 """
 
+import hashlib
+import json
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.content.assessments import ASSESSMENTS
+from app.content.assessments import ASSESSMENT_VERSION, ASSESSMENTS
 from app.content.course import ACTIVITIES, MODULES_BY_SLUG, OBJECTIVES
 from app.content.graphs import GRAPHS
 from app.content.schema import Activity, Item, Module
@@ -148,13 +151,18 @@ def submit(activity_id: str, body: SubmitIn, user: User = Depends(get_current_us
 
 # --- quiz attempts ------------------------------------------------------------------------------
 
-class CheckIn(BaseModel):
+class OperationIn(BaseModel):
+    request_id: str | None = Field(default=None, min_length=1, max_length=64)
+    revision: int | None = Field(default=None, ge=0)
+
+
+class CheckIn(OperationIn):
     item_id: str
     answer: Any = None
     reveal: bool = False
 
 
-class HintIn(BaseModel):
+class HintIn(OperationIn):
     item_id: str
 
 
@@ -183,42 +191,174 @@ def _formative_item(att: Attempt, activity: Activity, item_id: str) -> tuple[Ite
 
 def _save_item(att: Attempt, item: Item, st: dict[str, Any], db: Session) -> None:
     att.payload = {**att.payload, "items": {**att.payload.get("items", {}), item.id: st}}
-    db.commit()
 
 
-class FinishIn(BaseModel):
+class FinishIn(OperationIn):
     answers: dict[str, Any] | None = None
 
 
-def _open_attempt(aid: int, user: User, db: Session) -> tuple[Attempt, Activity]:
+def _lock_learner(user: User, db: Session) -> None:
+    # Serialise quiz starts and mutations across tabs/workers, including reward updates.
+    db.execute(
+        select(User).where(User.id == user.id).with_for_update().execution_options(populate_existing=True)
+    ).scalar_one()
+
+
+def _owned_attempt(aid: int, user: User, db: Session) -> tuple[Attempt, Activity]:
     att = db.get(Attempt, aid)
     if att is None or att.user_id != user.id or att.kind != "quiz":
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Unknown attempt")
-    if att.status != "open":
-        raise HTTPException(status.HTTP_409_CONFLICT, "This attempt is already finished")
     return att, ACTIVITIES[att.activity_id][1]
 
 
+def _require_open(att: Attempt) -> None:
+    if att.status != "open":
+        raise HTTPException(status.HTTP_409_CONFLICT, "This attempt is already finished")
+    if att.payload.get("version") != ASSESSMENT_VERSION:
+        raise HTTPException(status.HTTP_409_CONFLICT, "The quiz format changed. Reopen this activity to continue.")
+
+
+def _replay(att: Attempt, body: OperationIn, kind: str) -> dict[str, Any] | None:
+    receipt = att.payload.get("receipts", {}).get(body.request_id)
+    if receipt:
+        if receipt["fingerprint"] != _fingerprint(body, kind):
+            raise HTTPException(409, "This request ID was already used for a different action")
+        return receipt["response"]
+    _require_open(att)
+    if body.revision is not None and body.revision != att.payload.get("revision", 0):
+        raise HTTPException(409, "This quiz changed in another tab. Reload its saved state before continuing.")
+    return None
+
+
+def _fingerprint(body: OperationIn, kind: str) -> str:
+    return hashlib.sha256(json.dumps([kind, body.model_dump()], sort_keys=True).encode()).hexdigest()
+
+
+def _commit_operation(att: Attempt, body: OperationIn, kind: str, response: dict[str, Any],
+                      db: Session) -> dict[str, Any]:
+    revision = att.payload.get("revision", 0) + 1
+    response = {**response, "revision": revision}
+    receipts = dict(att.payload.get("receipts", {}))
+    if body.request_id:
+        receipts[body.request_id] = {"fingerprint": _fingerprint(body, kind), "response": response}
+    att.payload = {**att.payload, "revision": revision, "receipts": receipts}
+    db.commit()
+    return response
+
+
+def _report(att: Attempt, user: User, db: Session) -> dict[str, Any]:
+    return {
+        "revision": att.payload.get("revision", 0),
+        "result": att.result,
+        "mastery": mastery_report(mastery_map(db, user)),
+        "recommendations": recommendations(module_states(progress_map(db, user)), mastery_map(db, user)),
+    }
+
+
+def _attempt_payload(att: Attempt, activity: Activity, user: User, db: Session) -> dict[str, Any]:
+    assessment = ASSESSMENTS[activity.config["assessment"]]
+    compatible = att.payload.get("version") == ASSESSMENT_VERSION
+    state = att.payload.get("items", {}) if compatible else {}
+    draft = att.payload.get("draft", {}) if compatible else {}
+    return {
+        "attempt_id": att.id, "status": att.status, "revision": att.payload.get("revision", 0),
+        "user_id": user.id, "last_draft_request": att.payload.get("last_draft_request"),
+        "mode": assessment.mode, "pass_mark": assessment.pass_mark,
+        "items": [public_item(i) for i in assessment.items],
+        "answers": draft.get("answers", {}), "reflections": draft.get("reflections", {}),
+        "current_item": draft.get("current_item", assessment.items[0].id),
+        "results": {iid: st["response"] for iid, st in state.items() if "response" in st},
+        "hints": {iid: st["hint_response"] for iid, st in state.items() if "hint_response" in st},
+        "revealed": {iid: st.get("revealed", False) for iid, st in state.items()},
+        "last": {iid: st.get("last", "check") for iid, st in state.items()},
+        "compatible": compatible,
+        "report": _report(att, user, db) if att.status == "closed" else None,
+    }
+
+
+class StartIn(BaseModel):
+    new_attempt: bool = False
+
+
+class DraftIn(OperationIn):
+    revision: int = Field(ge=0)
+    answers: dict[str, Any]
+    reflections: dict[str, str] = Field(default_factory=dict)
+    current_item: str
+
+
 @router.post("/activities/{activity_id}/attempts", status_code=status.HTTP_201_CREATED)
-def start_attempt(activity_id: str, user: User = Depends(get_current_user),
+def start_attempt(activity_id: str, body: StartIn | None = None, user: User = Depends(get_current_user),
                   db: Session = Depends(get_db)) -> dict[str, Any]:
+    _lock_learner(user, db)
     _, activity = _get_activity(activity_id, user, db)
     if activity.kind != "quiz":
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Not a quiz")
-    assessment = ASSESSMENTS[activity.config["assessment"]]
-    att = Attempt(user_id=user.id, activity_id=activity.id, kind="quiz", status="open",
-                  payload={"items": {}}, result={})
+    attempts = list(db.scalars(select(Attempt).where(
+        Attempt.user_id == user.id, Attempt.activity_id == activity.id, Attempt.kind == "quiz"
+    ).order_by(Attempt.id.desc())))
+    active = next((a for a in attempts if a.status == "open"
+                   and a.payload.get("version") == ASSESSMENT_VERSION), None)
+    superseded = False
+    for old in attempts:
+        if old.status == "open" and old is not active:
+            old.status = "superseded"
+            superseded = True
+    if active:
+        db.commit()
+        return _attempt_payload(active, activity, user, db)
+    closed = next((a for a in attempts if a.status == "closed"), None)
+    if closed and not (body and body.new_attempt):
+        db.commit()
+        return _attempt_payload(closed, activity, user, db)
+    att = Attempt(user_id=user.id, activity_id=activity.id, kind="quiz", status="open", result={},
+                  payload={"items": {}, "version": ASSESSMENT_VERSION, "revision": 0, "draft": {}})
     db.add(att)
     db.commit()
-    return {"attempt_id": att.id, "mode": assessment.mode, "pass_mark": assessment.pass_mark,
-            "items": [public_item(i) for i in assessment.items]}
+    response = _attempt_payload(att, activity, user, db)
+    if superseded:
+        response["notice"] = "An older unfinished quiz could not be resumed. Its record was kept; this is a new attempt."
+    return response
+
+
+@router.get("/attempts/{aid}")
+def get_attempt(aid: int, user: User = Depends(get_current_user),
+                db: Session = Depends(get_db)) -> dict[str, Any]:
+    att, activity = _owned_attempt(aid, user, db)
+    return _attempt_payload(att, activity, user, db)
+
+
+@router.put("/attempts/{aid}/draft")
+def save_draft(aid: int, body: DraftIn, user: User = Depends(get_current_user),
+               db: Session = Depends(get_db)) -> dict[str, Any]:
+    _lock_learner(user, db)
+    att, activity = _owned_attempt(aid, user, db)
+    if cached := _replay(att, body, "draft"):
+        return cached
+    items = {i.id: i for i in ASSESSMENTS[activity.config["assessment"]].items}
+    if body.current_item not in items or not body.answers.keys() <= items.keys():
+        raise HTTPException(422, "Unknown question in draft")
+    if any(iid not in items or not items[iid].reflection_prompt or len(text) > 1200
+           for iid, text in body.reflections.items()):
+        raise HTTPException(422, "Invalid optional reflection")
+    previous = att.payload.get("draft", {}).get("answers", {})
+    for iid, st in att.payload.get("items", {}).items():
+        if (st.get("correct") or st.get("revealed")) and body.answers.get(iid) != previous.get(iid):
+            raise HTTPException(409, "A resolved answer cannot be changed")
+    att.payload = {**att.payload, "last_draft_request": body.request_id, "draft": {
+        "answers": body.answers, "reflections": body.reflections, "current_item": body.current_item,
+    }}
+    return _commit_operation(att, body, "draft", {}, db)
 
 
 @router.post("/attempts/{aid}/hint")
 def hint(aid: int, body: HintIn, user: User = Depends(get_current_user),
          db: Session = Depends(get_db)) -> dict[str, Any]:
     """Next level of help, before or between tries. Only help the learner hasn't seen is charged."""
-    att, activity = _open_attempt(aid, user, db)
+    _lock_learner(user, db)
+    att, activity = _owned_attempt(aid, user, db)
+    if cached := _replay(att, body, "hint"):
+        return cached
     item, st = _formative_item(att, activity, body.item_id)
     seen = min(MAX_HINT_LEVEL, _help_level(st))
     charged = seen < MAX_HINT_LEVEL
@@ -227,15 +367,21 @@ def hint(aid: int, body: HintIn, user: User = Depends(get_current_user),
         st["hints"] += 1
         st["hint_level"] = level
         _save_item(att, item, st, db)
-    return {"item_id": item.id, "level": level, "max_level": MAX_HINT_LEVEL, "charged": charged,
-            "hints": st["hints"], "worth": _credit_if_correct(st["tries"] + 1, st["hints"]),
-            **hint_content(item, level)}
+    response = {"item_id": item.id, "level": level, "max_level": MAX_HINT_LEVEL, "charged": charged,
+                "hints": st["hints"], "worth": _credit_if_correct(st["tries"] + 1, st["hints"]),
+                **hint_content(item, level)}
+    st.update(hint_response=response, last="hint")
+    _save_item(att, item, st, db)
+    return _commit_operation(att, body, "hint", response, db)
 
 
 @router.post("/attempts/{aid}/check")
 def check_item(aid: int, body: CheckIn, user: User = Depends(get_current_user),
                db: Session = Depends(get_db)) -> dict[str, Any]:
-    att, activity = _open_attempt(aid, user, db)
+    _lock_learner(user, db)
+    att, activity = _owned_attempt(aid, user, db)
+    if cached := _replay(att, body, "check"):
+        return cached
     item, st = _formative_item(att, activity, body.item_id)
 
     if body.reveal:
@@ -248,6 +394,10 @@ def check_item(aid: int, body: CheckIn, user: User = Depends(get_current_user),
         st["tries"] += 1
         st["correct"] = grade.correct
         st["last_score"] = grade.score
+        draft = att.payload.get("draft", {})
+        att.payload = {**att.payload, "draft": {
+            **draft, "answers": {**draft.get("answers", {}), item.id: body.answer},
+        }}
     _save_item(att, item, st, db)
 
     # Progressive scaffolding (Design 2.6): nudge -> the idea in full + visual cue -> worked answer.
@@ -264,13 +414,18 @@ def check_item(aid: int, body: CheckIn, user: User = Depends(get_current_user),
     if correct or body.reveal:
         resp["explanation"] = item.explanation
         resp["answer"] = expected_answer(item)
-    return resp
+    st.update(response=resp, last="check")
+    _save_item(att, item, st, db)
+    return _commit_operation(att, body, "check", resp, db)
 
 
 @router.post("/attempts/{aid}/finish")
 def finish_attempt(aid: int, body: FinishIn, user: User = Depends(get_current_user),
                    db: Session = Depends(get_db)) -> dict[str, Any]:
-    att, activity = _open_attempt(aid, user, db)
+    _lock_learner(user, db)
+    att, activity = _owned_attempt(aid, user, db)
+    if cached := _replay(att, body, "finish"):
+        return cached
     assessment = ASSESSMENTS[activity.config["assessment"]]
     per_objective: dict[int, list[float]] = {}
     review: list[dict[str, Any]] = []
@@ -293,7 +448,7 @@ def finish_attempt(aid: int, body: FinishIn, user: User = Depends(get_current_us
         stars = max(1, stars_for_score(score))
         result: dict[str, Any] = {"score": round(score, 3), "items": state, "review": review}
     else:
-        answers = body.answers or {}
+        answers = body.answers if body.answers is not None else att.payload.get("draft", {}).get("answers", {})
         for item in assessment.items:
             g = grade_item(item, answers.get(item.id))
             per_objective.setdefault(item.objective, []).append(g.score)
@@ -308,12 +463,14 @@ def finish_attempt(aid: int, body: FinishIn, user: User = Depends(get_current_us
     objective_scores = {o: sum(v) / len(v) for o, v in per_objective.items()}
     result["objectives"] = {str(o): round(s, 3) for o, s in objective_scores.items()}
     reward = record_result(db, user, activity, kind="quiz", completed=completed, score=round(score, 3), stars=stars,
-                           payload=att.payload | {"answers": body.answers or {}}, result=result,
-                           objective_scores=objective_scores, attempt=att)
+                           payload=att.payload | {"answers": body.answers if body.answers is not None
+                                                  else att.payload.get("draft", {}).get("answers", {})}, result=result,
+                           objective_scores=objective_scores, attempt=att, commit=False)
     mastery = mastery_map(db, user)
-    return {
+    response = {
         "result": result,
         "reward": reward,
         "mastery": mastery_report(mastery),
         "recommendations": recommendations(module_states(progress_map(db, user)), mastery),
     }
+    return _commit_operation(att, body, "finish", response, db)

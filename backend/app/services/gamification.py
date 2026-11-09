@@ -172,6 +172,7 @@ def record_result(
     result: dict[str, Any],
     objective_scores: dict[int, float] | None = None,
     attempt: Attempt | None = None,
+    commit: bool = True,
 ) -> dict[str, Any]:
     """Persist one graded result and return the reward summary shown to the learner."""
     before = level_info(user.xp)
@@ -212,7 +213,8 @@ def record_result(
     db.flush()
 
     new_badges = _award_badges(db, user, activity, result, stars, completed)
-    db.commit()
+    if commit:
+        db.commit()
 
     after = level_info(user.xp)
     return {
