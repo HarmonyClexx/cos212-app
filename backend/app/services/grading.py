@@ -5,7 +5,6 @@ the frontend turns into targeted feedback (which rows are wrong, where an order 
 diverged, which rubric criteria were met...).
 """
 
-import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -43,10 +42,6 @@ def expected_answer(item: Item) -> Any:
             return item.answer
 
 
-def _norm_text(s: str) -> str:
-    return re.sub(r"\s+", " ", s.lower())
-
-
 def grade_item(item: Item, answer: Any) -> ItemGrade:
     try:
         match item.type:
@@ -58,15 +53,15 @@ def grade_item(item: Item, answer: Any) -> ItemGrade:
                 return _grade_adjacency(item, answer)
             case "order":
                 return _grade_order(item, answer)
-            case "short_answer":
-                return _grade_short(item, answer)
     except (TypeError, ValueError, AttributeError, KeyError):
         pass
     return ItemGrade(False, 0.0, "That answer couldn't be read – try again.")
 
 
 def _grade_mcq(item: Item, answer: Any) -> ItemGrade:
-    chosen = {int(a) for a in (answer if isinstance(answer, list) else [answer])}
+    if not isinstance(answer, list) or any(type(a) is not int for a in answer):
+        raise ValueError("Choose an option")
+    chosen = set(answer)
     ok = chosen == set(item.answer)
     # The hint itself travels separately (see hint_content), so it is never shown twice.
     return ItemGrade(ok, 1.0 if ok else 0.0, "Correct!" if ok else "Not quite – have another look.")
@@ -125,27 +120,6 @@ def _grade_order(item: Item, answer: Any) -> ItemGrade:
                          detail)
     return ItemGrade(False, score, f"Right so far – but you stopped after {len(got)} of {len(expected)} vertices.",
                      detail)
-
-
-def _grade_short(item: Item, answer: Any) -> ItemGrade:
-    text = _norm_text(str(answer))
-    assert item.rubric
-    met = [c for c in item.rubric if any(k in text for k in c.any_of)]
-    # Unmet criteria carry a nudge: a question pointing at the gap, never the keywords.
-    criteria = [{"id": c.id, "descriptor": c.descriptor, "met": c in met, **({} if c in met else {"nudge": c.nudge})}
-                for c in item.rubric]
-    words = len(text.split())
-    score = len(met) / len(item.rubric)
-    ok = len(met) >= item.pass_criteria and words >= 8
-    if words < 8:
-        msg = "Say a little more – aim for at least one full sentence."
-    elif len(met) == len(item.rubric):
-        msg = "Distinction-level answer: you covered every criterion."
-    elif ok:
-        msg = f"Pass – you met {len(met)} of {len(item.rubric)} criteria. Can you cover the rest?"
-    else:
-        msg = f"You met {len(met)} of {len(item.rubric)} criteria; you need {item.pass_criteria} to pass."
-    return ItemGrade(ok, round(score, 3), msg, {"criteria": criteria})
 
 
 def public_item(item: Item) -> dict[str, Any]:

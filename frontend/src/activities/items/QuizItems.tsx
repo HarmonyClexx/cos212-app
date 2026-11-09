@@ -14,6 +14,8 @@ export interface ItemProps<T> {
   detail?: GradeDetail
   /** Level-2 hint visual cue: vertices to ring in blue. */
   focus?: string[]
+  reflection?: string
+  onReflectionChange?: (text: string) => void
 }
 
 /** Node marks with the hint ring added to the focus vertices. */
@@ -56,6 +58,13 @@ export function ItemView(props: ItemProps<Answer>) {
       {item.type === 'adjacency' && <AdjacencyBuilder {...(props as ItemProps<Record<string, string[]>>)} />}
       {item.type === 'order' && <OrderClicker {...(props as ItemProps<string[]>)} />}
       {item.type === 'short_answer' && <ShortAnswer {...(props as ItemProps<string>)} />}
+      {item.reflection_prompt && (
+        <label className="stack-v" style={{ marginTop: 16 }}>
+          <span className="small muted">{item.reflection_prompt}</span>
+          <textarea className="input" value={props.reflection ?? ''} disabled={props.locked}
+            maxLength={1200} onChange={(e) => props.onReflectionChange?.(e.target.value)} />
+        </label>
+      )}
     </div>
   )
 }
@@ -117,14 +126,20 @@ function AdjacencyBuilder({ item, value, onChange, locked, answer, detail, focus
   const ids = g.nodes.map((n) => n.id)
   const [held, setHeld] = useState<string | null>(null)
   const [over, setOver] = useState<string | null>(null)
+  const [announcement, setAnnouncement] = useState('')
   const shown = (answer as Record<string, string[]> | undefined) ?? value
   const wrong = new Set(detail?.wrong_rows ?? [])
 
   const add = (row: string, n: string) => {
     if (locked || row === n || value[row]?.includes(n)) return
     onChange({ ...value, [row]: [...(value[row] ?? []), n].sort() })
+    setAnnouncement(`Added ${n} to row ${row}.`)
   }
-  const remove = (row: string, n: string) => !locked && onChange({ ...value, [row]: value[row].filter((x) => x !== n) })
+  const remove = (row: string, n: string) => {
+    if (locked) return
+    onChange({ ...value, [row]: value[row].filter((x) => x !== n) })
+    setAnnouncement(`Removed ${n} from row ${row}.`)
+  }
   const drop = (row: string) => (e: DragEvent) => {
     e.preventDefault()
     setOver(null)
@@ -141,7 +156,10 @@ function AdjacencyBuilder({ item, value, onChange, locked, answer, detail, focus
       <div className="stack-v">
         {!locked && (
           <div>
-            <div className="small muted" style={{ marginBottom: 6 }}>Drag a vertex into a row — or tap it, then tap a row.</div>
+            <div className="small muted" style={{ marginBottom: 6 }}>
+              Select a vertex, then use a row's Add button. With a keyboard, use Tab and Enter or Space.
+              You can also drag a vertex into a row or tap the row.
+            </div>
             <div className="palette">
               {ids.map((n) => (
                 <button key={n} className={`token ${held === n ? 'held' : ''}`} draggable
@@ -167,9 +185,17 @@ function AdjacencyBuilder({ item, value, onChange, locked, answer, detail, focus
                 ))}
               </div>
               {wrong.has(r) && <Icon name="x" style={{ color: 'var(--danger)' }} />}
+              {!locked && (
+                <button className="btn sm adj-add" disabled={!held || held === r || value[r]?.includes(held)}
+                  aria-label={held ? `Add ${held} to row ${r}` : `Add selected vertex to row ${r}`}
+                  onClick={(e) => { e.stopPropagation(); if (held) add(r, held) }}>
+                  Add{held ? ` ${held}` : ''}
+                </button>
+              )}
             </div>
           ))}
         </div>
+        <span className="sr-only" role="status">{announcement}</span>
       </div>
     </div>
   )

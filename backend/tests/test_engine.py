@@ -179,19 +179,18 @@ def test_grade_adjacency_and_order() -> None:
     assert not bfs_like.correct and bfs_like.detail.get("looks_like") == "bfs"
 
 
-def test_grade_short_answer_rubric() -> None:
-    item = _item("compare-check", "c5")
-    strong = ("DFS uses a stack so it follows one branch as deep as possible then backtracks, "
-              "while BFS uses a queue and explores level by level.")
-    g = grade_item(item, strong)
-    assert g.correct and g.score == 1.0
-    weak = grade_item(item, "they are different algorithms")
-    assert not weak.correct
-    # Unmet criteria come with a nudge towards the gap; met ones don't need one.
-    partial = grade_item(item, "DFS uses a stack, so it keeps following the newest vertex it found.")
-    by_id = {c["id"]: c for c in partial.detail["criteria"]}
-    assert by_id["dfs-structure"]["met"] and "nudge" not in by_id["dfs-structure"]
-    assert not by_id["bfs-structure"]["met"] and "queue" not in by_id["bfs-structure"]["nudge"].lower()
+@pytest.mark.parametrize(("bank", "iid", "right", "swapped"), [
+    ("compare-check", "c5", [1], [0]), ("final", "f10", [2], [1]),
+])
+def test_comparison_reasons_reject_swapped_concepts(bank, iid, right, swapped) -> None:
+    item = _item(bank, iid)
+    assert grade_item(item, right).correct
+    assert grade_item(item, right).score == 1
+    assert not grade_item(item, swapped).correct
+    assert grade_item(item, swapped).score == 0
+    reversed_prose = "DFS uses a queue while BFS uses a stack; DFS goes level by level and BFS goes deep."
+    assert not grade_item(item, reversed_prose).correct
+    assert not grade_item(item, str(right[0])).correct
 
 
 def test_level_curve() -> None:

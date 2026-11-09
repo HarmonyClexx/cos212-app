@@ -42,6 +42,7 @@ class Item(BaseModel):
     rubric: list[Criterion] | None = None
     pass_criteria: int = 2
     model_answer: str | None = None
+    reflection_prompt: str | None = None
     # Progressive scaffolding (Design 2.6). Each level is reached by asking for a hint or by a
     # wrong try, whichever comes first; the worked answer itself needs three tries.
     hint: str  # level 1: a short nudge

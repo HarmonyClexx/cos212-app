@@ -4,35 +4,17 @@ Formative banks give tiered feedback and allow retries; the summative bank ("Fac
 Minotaur") uses unseen graphs to test transfer and reports mastery per objective.
 """
 
-from app.content.schema import Assessment, Criterion, Item
+from app.content.schema import Assessment, Item
 
-COMPARISON_RUBRIC = [
-    Criterion(
-        id="dfs-structure",
-        nudge="Which data structure holds DFS's path? Think of Ariadne's thread.",
-        descriptor="Names the structure DFS relies on (a stack / LIFO / recursion).",
-        any_of=["stack", "lifo", "last in", "last-in", "recurs", "call stack", "most recent"],
-    ),
-    Criterion(
-        id="bfs-structure",
-        nudge="Which data structure holds BFS's frontier, serving the oldest discovery first?",
-        descriptor="Names the structure BFS relies on (a queue / FIFO).",
-        any_of=["queue", "fifo", "first in", "first-in", "oldest"],
-    ),
-    Criterion(
-        id="dfs-behaviour",
-        nudge="How does DFS move through the graph – one branch at a time, or everywhere at once?",
-        descriptor="Describes DFS following one branch as deep as possible before backtracking.",
-        any_of=["deep", "depth", "branch", "backtrack", "as far as", "one path", "dead end", "dead-end"],
-    ),
-    Criterion(
-        id="bfs-behaviour",
-        nudge="In what order does BFS reach vertices? Think about distance from the start.",
-        descriptor="Describes BFS visiting all nodes at one distance (level) before going further.",
-        any_of=["level", "layer", "breadth", "wide", "closest", "nearest", "distance", "neighbours first",
-                "neighbors first", "all neighbours", "all neighbors", "ripple"],
-    ),
+ASSESSMENT_VERSION = 2
+COMPARISON_REASONS = [
+    "DFS uses a queue to explore level by level; BFS uses a stack to follow one branch deeply.",
+    ("DFS uses a stack (LIFO) to continue the active path deeply before backtracking; "
+     "BFS uses a queue (FIFO) to explore vertices level by level."),
+    "Both searches sort every vertex alphabetically, regardless of the graph's connections.",
+    "DFS and BFS always visit vertices in the same order because they visit the same vertices.",
 ]
+REFLECTION_PROMPT = "Optional reflection — explain the difference in your own words (saved, not graded)."
 
 ASSESSMENTS: dict[str, Assessment] = {}
 
@@ -182,16 +164,13 @@ _add(Assessment(id="compare-check", mode="formative", items=[
          hint="Which algorithm reaches every vertex 1 step away before any vertex 2 steps away?",
          hint2="Fewest corridors means shortest distance. One search reaches everything 1 step away, then everything 2 steps away, and so on – so the first time it reaches the lair, it must have used a shortest route.",
          explanation="BFS reaches vertices in order of distance, so the first time it finds the lair it used the fewest edges."),
-    Item(id="c5", type="short_answer", objective=5,
-         prompt="In 1–3 sentences: **why** does DFS dive deep into one branch while BFS spreads out level by level?",
-         rubric=COMPARISON_RUBRIC, pass_criteria=2,
-         model_answer="DFS uses a stack (last in, first out), so it always continues from the most recently "
-                      "discovered vertex and follows one branch as deep as possible before backtracking. BFS uses "
-                      "a queue (first in, first out), so it finishes every vertex at one distance (level) before "
-                      "moving further out.",
+    Item(id="c5", type="mcq", objective=5,
+         prompt="Which reason explains **why** DFS dives deep while BFS spreads out level by level?",
+         options=COMPARISON_REASONS, answer=[1], reflection_prompt=REFLECTION_PROMPT,
          hint="Think about the data structure each one uses and which vertex it takes out next.",
          hint2="A strong answer joins two ideas: the data structure each search uses, and which vertex that structure hands back next. Name both structures, then say how each shapes the search.",
-         explanation="Strong answers link the data structure (stack vs queue) to the behaviour (deep vs level-by-level)."),
+         explanation="DFS uses a stack (LIFO) to continue its active path before backtracking. "
+                     "BFS uses a queue (FIFO), processing earlier discoveries before later ones, level by level."),
 ]))
 
 # --- Summative: all objectives -------------------------------------------------------------
@@ -231,11 +210,12 @@ _add(Assessment(id="final", mode="summative", pass_mark=0.6, items=[
          prompt="Which sequence is the **BFS** order from A?",
          options=["A, B, F, C, E, G, H, D", "A, B, C, D, E, F, G, H", "A, F, B, H, G, E, C, D", "A, B, F, C, D, E, G, H"],
          answer=[0], hint="", explanation="Distance 1: B, F · distance 2: C (via B), E, G, H (via F) · distance 3: D."),
-    Item(id="f10", type="short_answer", objective=5,
-         prompt="A friend says: *\"DFS and BFS visit the same vertices, so they're basically the same.\"* Explain the key difference.",
-         rubric=COMPARISON_RUBRIC, pass_criteria=2,
-         model_answer="They visit the same vertices but in a different order. DFS uses a stack and goes as deep as "
-                      "possible down one branch before backtracking; BFS uses a queue and visits all vertices at one "
-                      "level (distance) before the next, which is why BFS finds shortest paths in unweighted graphs.",
-         hint="", explanation="Mention the data structure and how that changes the order of exploration."),
+    Item(id="f10", type="mcq", objective=5,
+         prompt="A friend says: *\"DFS and BFS visit the same vertices, so they're basically the same.\"* "
+                "Choose the reason that correctly distinguishes their exploration.",
+         options=[COMPARISON_REASONS[3], COMPARISON_REASONS[0], COMPARISON_REASONS[1], COMPARISON_REASONS[2]],
+         answer=[2], reflection_prompt=REFLECTION_PROMPT,
+         hint="", explanation="DFS's stack (LIFO) supports deep exploration of the active path before backtracking; "
+                              "BFS's queue (FIFO) supports level-order exploration. Visiting the same vertices "
+                              "does not mean visiting them in the same order."),
 ]))
