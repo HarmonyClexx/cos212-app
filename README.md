@@ -69,6 +69,23 @@ Restart the backend/frontend if you are not running their development reload mod
 
 ---
 
+## Free hosting (Neon + Render)
+
+[render.yaml](render.yaml) is a Render Blueprint for the API (Docker, free plan, Frankfurt) and the
+web app (static site). Postgres is a free [Neon](https://neon.com) project, because Render's free
+Postgres is deleted after 30 days.
+
+1. **Database:** create a Neon project in Frankfurt, copy the *direct* (unpooled) connection string
+   and change `postgresql://` to `postgresql+psycopg://`.
+2. **Render:** dashboard → **New → Blueprint** → this repo. Paste the Neon URL when asked for
+   `ARIADNE_DATABASE_URL`; the JWT secret is generated. Migrations run each time the API starts.
+3. Open https://ariadne-cos750.onrender.com. It forwards `/api/*` to
+   https://ariadne-cos750-api.onrender.com, so no CORS setup is needed.
+
+**Free-tier caveats:** the API sleeps after 15 idle minutes and the next request takes 30–60 s, so
+open the site a minute before a demo. For marking, add `ARIADNE_UNLOCK_ALL=true` to the API's
+environment in the Render dashboard.
+
 ## How the design document maps to the app
 
 | ADDIE design element | Where it lives |
