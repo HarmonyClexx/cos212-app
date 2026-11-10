@@ -4,6 +4,9 @@ A gamified, adaptive tutor that teaches **graphs and depth-first search (DFS)** 
 students with no prior data-structures background. Built for the COS750 project from the team's
 ADDIE analysis and design documents.
 
+Learners start with a short **intro course** (five lessons, about 15 minutes in all) that explains the
+ideas. The **game** then puts each idea to work and assesses it.
+
 > Theseus escaped the Labyrinth with a ball of thread and a stick of chalk.
 > The thread is the **stack**. The chalk is the **visited set**. That is DFS.
 
@@ -40,6 +43,9 @@ npm run dev
 
 **Demo accounts** (after seeding; password `labyrinth` for all): `ariadne` (course complete),
 `icarus`, `daedalus`, `phaedra` (mid-course), `minos` (just started).
+
+**Learners who started before the intro course existed** keep their place: a module or activity
+with any saved progress stays unlocked, so the course only gates people who haven't started the game.
 
 **Demo / marking mode:** set `ARIADNE_UNLOCK_ALL=true` in `backend/.env` to open every module immediately.
 
@@ -90,6 +96,8 @@ environment in the Render dashboard.
 
 | ADDIE design element | Where it lives |
 |---|---|
+| **Explanation first** (Design 2.2: explanation, demonstration, practice, assessment, feedback · Gagné 4: present the content) | The **intro course**: five lessons, one per learning section 2.3.1–2.3.5 / objective. Each page pairs a short explanation with a figure to try (graph explorer, list/matrix views, stack and queue toys, DFS/BFS steppers). Most end in a quick check whose every option explains itself. The game unlocks once the course is done, and each game module links back to its lesson |
+| **Retrieval practice & retention** (Gagné 9) | Quick checks inside every lesson gate the next page (ungraded). Each lesson ends with an "In a nutshell" recap and names the game module that practises it |
 | **Problem-centred activation** (Merrill / Gagné 3): start from intuition, e.g. a maze | Module 0, *The Labyrinth*: fog-of-war maze with a thread and chalk; the map is then revealed as a graph and each tool is named |
 | **Inform learners of objectives** (Gagné 2) | Every module header shows its objective, CS2023 skill level (Explain / Apply / Evaluate) and the outcome statement |
 | **Frame 1:** canvas + inspector, click to reveal definitions | `InspectActivity`: click vertices/edges, toggle directed, discovery checklist |
@@ -103,9 +111,9 @@ environment in the Render dashboard.
 | **Formative assessment** (CAI / simulation / concept mapping) | Five formative quizzes with retries; item types: MCQ, tap-the-graph, adjacency builder and click-the-order |
 | **Summative criterion-referenced test** | Module 6, *Face the Minotaur*: 10 items, a per-objective report, pass mark 60% |
 | **DFS/BFS explanation assessment** | Structured reason choices associate stack/LIFO with depth-first exploration and queue/FIFO with level-order exploration. Optional written reflection is saved but explicitly ungraded; keyword presence is not treated as understanding |
-| **Adaptive system** recommending revision | Per-objective mastery (running average, then EMA) and "Revise: …" recommendations below 70% |
+| **Adaptive system** recommending revision | Per-objective mastery (running average, then EMA) and "Revise: …" recommendations below 70%. Below 40% the recommendation is to re-read the objective's lesson before practising again |
 | **Flow** (Csíkszentmihályi): immediate feedback, balanced challenge | Instant per-click feedback, streak counter, difficulty ramp (tree → cycle → 8-node network) |
-| **Malone & Lepper**: challenge, curiosity, fantasy, control | Stars, XP, levels, 10 badges, leaderboard · Theseus/Minotaur framing · learner drives every step |
+| **Malone & Lepper**: challenge, curiosity, fantasy, control | Stars, XP, levels, 11 badges, leaderboard · Theseus/Minotaur framing · learner drives every step |
 | **Constructivism** | Learners *perform* the algorithm, so mistakes are diagnosed rather than just marked wrong |
 
 ### Hints everywhere, so being stuck isn't frustrating
@@ -147,7 +155,8 @@ The counts are stored per attempt (`attempts.result.breakdown`), ready for the A
 backend/
   app/
     engine/        graph.py, traversal.py (DFS/BFS traces), replay.py (server-side trace grading)
-    content/       graphs.py, course.py (modules + objectives), assessments.py (quiz banks)
+    content/       graphs.py, course.py (modules + objectives), lessons.py (intro course),
+                   assessments.py (quiz banks)
     services/      grading.py (structured item grading), gamification.py (XP, levels, badges,
                    streaks, mastery), progress.py (unlocking, recommendations)
     api/           auth.py, me.py (profile, leaderboard), course.py (content, submit, quiz attempts)
@@ -158,7 +167,7 @@ backend/
 frontend/src/
   engine/          TypeScript twin of the backend engine + tracer state machine
   components/      GraphCanvas (SVG), Stack/Queue/Visited panels, RewardModal, TopBar, icons
-  activities/      Maze, Inspect, Represent, Demo, Trace, Compare, Quiz (+ item types)
+  activities/      Lesson (+ lesson/ figures), Maze, Inspect, Represent, Demo, Trace, Compare, Quiz (+ item types)
   pages/           Landing, Map, Module, Leaderboard, Profile
 ```
 
@@ -176,6 +185,11 @@ with the app, and are checked by tests. Every expected DFS/BFS order quoted in a
 recomputed in `tests/test_engine.py`, so a typo in course content fails the build.
 
 ### Adding content
+- **A lesson page:** add a `LessonPage(...)` to a lesson in `content/lessons.py`. Its `body` uses a tiny
+  markdown subset (paragraphs, `- ` bullets, `1. ` steps, `**bold**`, `*italic*`, `` `code` ``). It can
+  have a `figure` (`graph`, `neighbours`, `representation`, `stack`, `queue`, `trace`, `orders`) and a
+  `check` with one `why` per option. Lessons use their own `intro-*` graphs so they never give away a
+  quiz answer, and `tests/test_engine.py` recomputes every graph fact a check depends on.
 - **A graph:** add it with `_add(_g("my-graph", {"A": (x, y), ...}, "A-B B-C"))` in `content/graphs.py`
   (use `A>B` for directed edges; coordinates are in a 100 × 75 space).
 - **A practice challenge:** add an `Activity(kind="trace", config={"graph": ..., "start": ..., "auto_backtrack": ...})` to a module in `content/course.py`.
@@ -191,7 +205,7 @@ recomputed in `tests/test_engine.py`, so a typo in course content fails the buil
 | POST | `/api/auth/register`, `/api/auth/login` | JWT auth |
 | GET | `/api/me` | profile, level, badges, mastery, recommendations |
 | GET | `/api/modules`, `/api/modules/{slug}` | course + per-learner state (locks, stars) |
-| POST | `/api/activities/{id}/submit` | trace / maze / lesson completion → reward |
+| POST | `/api/activities/{id}/submit` | trace / maze / lesson / explore completion → reward (a lesson counts once every check is answered) |
 | POST | `/api/activities/{id}/attempts` | open a quiz attempt (sanitised items) |
 | POST | `/api/attempts/{id}/hint` | formative: next hint level (+ vertices to ring), priced into the credit |
 | POST | `/api/attempts/{id}/check` | formative: grade one item, tiered feedback |

@@ -4,6 +4,7 @@ import { edgeId, type GraphSpec, type TraceEvent } from '../engine/graph'
 
 export interface RewardMeta {
   graded: boolean
+  title?: string
   subtitle?: string
 }
 

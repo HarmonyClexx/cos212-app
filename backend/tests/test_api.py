@@ -49,6 +49,19 @@ def register(c: TestClient, name: str = "theseus") -> dict[str, str]:
     return {"Authorization": f"Bearer {r.json()['token']}"}
 
 
+def finish_lesson(c: TestClient, h: dict[str, str], activity_id: str) -> dict:
+    from app.content.course import ACTIVITIES
+    from app.content.lessons import LESSONS
+    checks = LESSONS[ACTIVITIES[activity_id][1].config["lesson"]].checks()
+    r = c.post(f"/api/activities/{activity_id}/submit", headers=h,
+               json={"data": {"answers": {k.id: k.answer for k in checks}, "tries": {k.id: 1 for k in checks}}})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+INTRO = ["l1-graphs", "l2-representation", "l3-dfs", "l4-backtracking", "l5-bfs"]
+
+
 def test_auth_roundtrip(client: TestClient) -> None:
     register(client)
     assert client.post("/api/auth/register", json={"username": "Theseus", "display_name": "x",
@@ -61,7 +74,16 @@ def test_auth_roundtrip(client: TestClient) -> None:
 def test_locking_and_maze(client: TestClient) -> None:
     h = register(client)
     mods = client.get("/api/modules", headers=h).json()
+    assert [m["slug"] for m in mods[:2]] == ["intro", "labyrinth"] and mods[0]["track"] == "course"
     assert mods[0]["unlocked"] and not mods[1]["unlocked"]
+    assert client.get("/api/modules/labyrinth", headers=h).status_code == 403
+    assert client.post("/api/activities/m0-maze/submit", headers=h,
+                       json={"data": {"path": ["A", "B", "E", "H", "K", "M"]}}).status_code == 403
+
+    for lesson in INTRO:
+        finish_lesson(client, h, lesson)
+    mods = client.get("/api/modules", headers=h).json()
+    assert mods[0]["completed"] and mods[1]["unlocked"] and not mods[2]["unlocked"]
     assert client.get("/api/modules/anatomy", headers=h).status_code == 403
 
     bad = client.post("/api/activities/m0-maze/submit", headers=h, json={"data": {"path": ["A", "M"]}})
@@ -69,12 +91,63 @@ def test_locking_and_maze(client: TestClient) -> None:
     path = ["A", "B", "E", "H", "K", "M"]
     r = client.post("/api/activities/m0-maze/submit", headers=h, json={"data": {"path": path}}).json()
     assert r["reward"]["xp_gained"] == 50
-    assert {b["id"] for b in r["reward"]["new_badges"]} == {"first-steps", "thread-bearer"}
+    assert {b["id"] for b in r["reward"]["new_badges"]} == {"thread-bearer"}
 
     mods = client.get("/api/modules", headers=h).json()
-    assert mods[1]["unlocked"]
+    assert mods[2]["unlocked"]
     detail = client.get("/api/modules/anatomy", headers=h).json()
     assert detail["activities"][0]["config"]["graph"]["id"] == "anatomy"
+
+
+def test_lessons_need_every_check_and_open_the_game(client: TestClient) -> None:
+    h = register(client)
+    intro = client.get("/api/modules/intro", headers=h).json()
+    assert intro["track"] == "course" and [a["id"] for a in intro["activities"]] == INTRO
+    lesson = intro["activities"][0]["config"]["lesson"]
+    assert lesson["pages"][0]["figure"]["graphs"][0]["id"] == "intro-basic"  # graph ids are resolved
+    assert client.get("/api/modules/anatomy", headers=h).status_code == 403
+
+    # Lessons open in order, and only count once every check has been answered correctly.
+    assert client.post("/api/activities/l2-representation/submit", headers=h, json={"data": {}}).status_code == 403
+    checks = [p["check"] for p in lesson["pages"] if p["check"]]
+    partial = {c["id"]: c["answer"] for c in checks[:-1]}
+    wrong = {**partial, checks[-1]["id"]: (checks[-1]["answer"] + 1) % len(checks[-1]["options"])}
+    for answers in (partial, wrong, {}):
+        r = client.post("/api/activities/l1-graphs/submit", headers=h, json={"data": {"answers": answers}})
+        assert r.status_code == 422
+
+    first = finish_lesson(client, h, "l1-graphs")
+    assert first["result"]["first_try"] == len(checks)
+    assert {b["id"] for b in first["reward"]["new_badges"]} == {"first-steps"}
+    assert first["reward"]["xp_gained"] == 20 and first["reward"]["next_activity"] == "l2-representation"
+    assert finish_lesson(client, h, "l1-graphs")["reward"]["xp_gained"] == 0  # re-reading isn't farmable
+
+    for lesson_id in INTRO[1:-1]:
+        finish_lesson(client, h, lesson_id)
+    last = finish_lesson(client, h, "l5-bfs")["reward"]
+    assert "well-read" in {b["id"] for b in last["new_badges"]}
+    assert last["next_activity"] == "m0-maze" and last["level"]["level"] == 2  # 5 x 20 XP
+
+    me = client.get("/api/me", headers=h).json()
+    assert me["recommendations"][0]["activity_id"] == "m0-maze"
+
+
+def test_started_work_stays_open_when_content_is_added_before_it(
+        client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A learner who started the game before the intro course existed keeps their place."""
+    from app.core.config import settings
+    h = register(client)
+    monkeypatch.setattr(settings, "unlock_all", True)
+    client.post("/api/activities/m0-maze/submit", headers=h, json={"data": {"path": ["A", "B", "E", "H", "K", "M"]}})
+    client.post("/api/activities/m1-inspect/submit", headers=h,
+                json={"data": {"discovered": ["vertex", "edge", "directed", "directed-edge", "degree"]}})
+    monkeypatch.setattr(settings, "unlock_all", False)
+
+    mods = {m["slug"]: m for m in client.get("/api/modules", headers=h).json()}
+    assert mods["intro"]["unlocked"] and not mods["intro"]["completed"]
+    assert mods["labyrinth"]["unlocked"] and mods["anatomy"]["unlocked"]
+    assert [a["unlocked"] for a in mods["anatomy"]["activities"]] == [True, True]
+    assert not mods["representation"]["unlocked"]
 
 
 def test_formative_quiz_flow_and_no_answer_leak(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
