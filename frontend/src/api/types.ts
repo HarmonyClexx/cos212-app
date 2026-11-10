@@ -49,7 +49,10 @@ export interface Me {
   stats: { completed: number; total: number; stars: number; max_stars: number; attempts: number }
 }
 
-export type ActivityKind = 'maze' | 'inspect' | 'represent' | 'demo' | 'trace' | 'compare' | 'quiz'
+export type ActivityKind = 'lesson' | 'maze' | 'inspect' | 'represent' | 'demo' | 'trace' | 'compare' | 'quiz'
+
+/** 'course' = the intro course (explanation first); 'game' = the Labyrinth that puts it to work. */
+export type Track = 'course' | 'game'
 
 export interface ActivityState {
   id: string
@@ -72,6 +75,9 @@ export interface ModuleSummary {
   tagline: string
   icon: string
   objective: number | null
+  track: Track
+  /** Intro-course activity that teaches this module's ideas. */
+  lesson: string | null
   unlocked: boolean
   completed: boolean
   stars: number
@@ -91,6 +97,44 @@ export interface ActivityConfig {
   mode?: 'formative' | 'summative'
   item_count?: number
   pass_mark?: number
+  lesson?: Lesson
+}
+
+export interface LessonCheck {
+  id: string
+  prompt: string
+  options: string[]
+  answer: number
+  /** One explanation per option: why it is right, or why it is wrong. */
+  why: string[]
+}
+
+export interface LessonFigure {
+  kind: 'graph' | 'neighbours' | 'representation' | 'stack' | 'queue' | 'trace' | 'orders'
+  graphs: GraphSpec[]
+  captions: string[]
+  highlight: string[]
+  start: string | null
+  algorithm: 'dfs' | 'bfs'
+  views: ('list' | 'matrix')[]
+}
+
+export interface LessonPage {
+  id: string
+  title: string
+  body: string
+  code: string | null
+  figure: LessonFigure | null
+  check: LessonCheck | null
+}
+
+export interface Lesson {
+  id: string
+  objective: number | null
+  minutes: number
+  pages: LessonPage[]
+  recap: string[]
+  practice: string
 }
 
 export interface Activity {
@@ -111,6 +155,8 @@ export interface ModuleDetail {
   tagline: string
   story: string
   objective: number | null
+  track: Track
+  lesson: string | null
   outcome: string
   icon: string
   activities: Activity[]

@@ -3,7 +3,7 @@ import { Icon } from './Icon'
 
 /** The call stack, drawn bottom-up. Popped frames fly out so the learner *sees* backtracking. */
 export function StackPanel({
-  items, title = 'Call stack', deadEnd = false, onPop, popEnabled = false, popLabel = 'Backtrack (pop)',
+  items, title = 'Call stack', deadEnd = false, onPop, popEnabled = false, popLabel = 'Backtrack (pop)', plain = false,
 }: {
   items: string[]
   title?: string
@@ -11,7 +11,10 @@ export function StackPanel({
   onPop?: () => void
   popEnabled?: boolean
   popLabel?: string
+  /** A bare stack of items (for teaching the data structure itself) rather than dfs() call frames. */
+  plain?: boolean
 }) {
+  const frame = (n: string) => (plain ? n : <><span className="fn">dfs(</span>{n}<span className="fn">)</span></>)
   const prev = useRef(items)
   const [ghost, setGhost] = useState<{ node: string; key: number } | null>(null)
   useEffect(() => {
@@ -31,12 +34,12 @@ export function StackPanel({
         <span className="faint tiny">{items.length} frame{items.length === 1 ? '' : 's'}</span>
       </div>
       <div className="stack-box" aria-live="polite" aria-label={`Stack, bottom to top: ${items.join(', ') || 'empty'}`}>
-        {items.length === 0 && !ghost && <div className="stack-empty">Empty stack<br />— traversal complete —</div>}
+        {items.length === 0 && !ghost && <div className="stack-empty">Empty stack{!plain && <><br />— traversal complete —</>}</div>}
         {items.map((n, i) => {
           const top = i === items.length - 1
           return (
             <div key={`${i}-${n}`} className={`frame ${top ? 'top' : ''} ${top && deadEnd ? 'deadend' : ''}`}>
-              <span className="fn">dfs(</span>{n}<span className="fn">)</span>
+              {frame(n)}
               {top && <span className="tag">{deadEnd ? 'dead end' : 'top'}</span>}
               {i === 0 && !top && <span className="tag faint">bottom</span>}
             </div>
@@ -44,7 +47,7 @@ export function StackPanel({
         })}
         {ghost && (
           <div key={ghost.key} className="frame ghost" style={{ top: 10 }}>
-            <span className="fn">dfs(</span>{ghost.node}<span className="fn">)</span><span className="tag">popped</span>
+            {frame(ghost.node)}<span className="tag">popped</span>
           </div>
         )}
       </div>
@@ -57,11 +60,11 @@ export function StackPanel({
   )
 }
 
-export function QueuePanel({ items }: { items: string[] }) {
+export function QueuePanel({ items, title = 'Queue' }: { items: string[]; title?: string }) {
   return (
     <div className="ds-panel">
       <div className="ds-head">
-        <div className="title"><span className="dot" style={{ background: 'var(--hint)' }} />Queue</div>
+        <div className="title"><span className="dot" style={{ background: 'var(--hint)' }} />{title}</div>
         <span className="faint tiny">front → back</span>
       </div>
       <div className="queue-box" aria-label={`Queue, front to back: ${items.join(', ') || 'empty'}`}>

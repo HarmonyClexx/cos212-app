@@ -20,6 +20,7 @@ from fastapi.testclient import TestClient
 from app.content.assessments import ASSESSMENTS
 from app.content.course import MODULES
 from app.content.graphs import GRAPHS
+from app.content.lessons import LESSONS
 from app.engine.graph import Graph
 from app.engine.traversal import dfs_trace
 from app.main import app
@@ -53,7 +54,12 @@ def sloppy(actions: list[dict], skill: float, rng: random.Random) -> list[dict]:
 
 def play(c: TestClient, h: dict, activity, skill: float, rng: random.Random) -> None:
     cfg = activity.config
-    if activity.kind == "maze":
+    if activity.kind == "lesson":
+        checks = LESSONS[cfg["lesson"]].checks()
+        data = {"answers": {c.id: c.answer for c in checks},
+                "tries": {c.id: 1 if rng.random() < skill else 2 for c in checks}}
+        r = c.post(f"/api/activities/{activity.id}/submit", headers=h, json={"data": data})
+    elif activity.kind == "maze":
         r = c.post(f"/api/activities/{activity.id}/submit", headers=h,
                    json={"data": {"path": ["A", "B", "E", "H", "K", "M"]}})
     elif activity.kind in ("inspect", "represent", "demo", "compare"):

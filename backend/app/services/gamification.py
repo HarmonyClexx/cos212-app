@@ -46,6 +46,7 @@ class Badge:
 
 BADGES = [
     Badge("first-steps", "First Steps", "Complete your first activity.", "footprints"),
+    Badge("well-read", "Ariadne's Pupil", "Finish all five lessons of the intro course.", "book"),
     Badge("thread-bearer", "Thread Bearer", "Find the Minotaur's lair in the Labyrinth.", "spool"),
     Badge("cartographer", "Cartographer", "Build an adjacency list perfectly on the first try.", "map"),
     Badge("deep-diver", "Deep Diver", "Earn 3 stars on a DFS trace.", "anchor"),
@@ -127,6 +128,13 @@ def _award_badges(db: Session, user: User, activity: Activity, result: dict[str,
 
     if completed:
         grant("first-steps")
+    if activity.kind == "lesson" and completed:
+        course = [a.id for a in ACTIVITIES[activity.id][0].activities]
+        finished = set(db.scalars(select(ActivityProgress.activity_id).where(
+            ActivityProgress.user_id == user.id, ActivityProgress.completed.is_(True),
+            ActivityProgress.activity_id.in_(course))))
+        if finished >= set(course):
+            grant("well-read")
     if activity.kind == "maze" and completed:
         grant("thread-bearer")
     if activity.kind == "quiz" and activity.config.get("assessment") == "representation-check":

@@ -2,7 +2,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-ActivityKind = Literal["maze", "inspect", "represent", "demo", "trace", "compare", "quiz"]
+ActivityKind = Literal["lesson", "maze", "inspect", "represent", "demo", "trace", "compare", "quiz"]
 ItemType = Literal["mcq", "graph_select", "adjacency", "order", "short_answer"]
 
 
@@ -70,7 +70,7 @@ class Activity(BaseModel):
 
 class Module(BaseModel):
     slug: str
-    order: int
+    order: int  # position within its track
     title: str
     tagline: str
     story: str  # fantasy framing (Malone & Lepper)
@@ -78,3 +78,52 @@ class Module(BaseModel):
     outcome: str  # "By the end you can..." (Gagne event 2: inform learners of objectives)
     icon: str
     activities: list[Activity]
+    # "course" = the intro course (explanation first); "game" = the Labyrinth that puts it to work.
+    track: Literal["course", "game"] = "game"
+    lesson: str | None = None  # intro-course activity that teaches this module's ideas
+
+
+# --- intro course ------------------------------------------------------------------------------
+
+class LessonCheck(BaseModel):
+    """A retrieval-practice question inside a lesson. Ungraded: it gates the next page, nothing else.
+
+    Every option carries its own explanation, so a wrong pick is answered with *why* it is wrong.
+    """
+
+    id: str
+    prompt: str
+    options: list[str]
+    answer: int
+    why: list[str]
+
+
+class LessonFigure(BaseModel):
+    kind: Literal["graph", "neighbours", "representation", "stack", "queue", "trace", "orders"]
+    graphs: list[str] = Field(default_factory=list)  # graph ids; "graph" shows them side by side
+    captions: list[str] = Field(default_factory=list)
+    highlight: list[str] = Field(default_factory=list)  # vertex ids and edge ids ("A-B") to emphasise
+    start: str | None = None
+    algorithm: Literal["dfs", "bfs"] = "dfs"
+    views: list[Literal["list", "matrix"]] = Field(default_factory=lambda: ["list", "matrix"])
+
+
+class LessonPage(BaseModel):
+    id: str
+    title: str
+    body: str  # paragraphs; "- " bullets; "1. " steps; **bold**, *italic*, `code`
+    code: str | None = None  # pseudocode
+    figure: LessonFigure | None = None
+    check: LessonCheck | None = None
+
+
+class Lesson(BaseModel):
+    id: str
+    objective: int | None
+    minutes: int
+    pages: list[LessonPage]
+    recap: list[str]  # "In a nutshell" (Gagne event 9: enhance retention)
+    practice: str  # slug of the game module that puts this lesson to work
+
+    def checks(self) -> list[LessonCheck]:
+        return [p.check for p in self.pages if p.check]

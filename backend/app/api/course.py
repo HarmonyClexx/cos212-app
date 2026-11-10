@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from app.content.assessments import ASSESSMENT_VERSION, ASSESSMENTS
 from app.content.course import ACTIVITIES, MODULES_BY_SLUG, OBJECTIVES
 from app.content.graphs import GRAPHS
+from app.content.lessons import LESSONS, lesson_payload
 from app.content.schema import Activity, Item, Module
 from app.core.db import get_db
 from app.core.security import get_current_user
@@ -33,7 +34,8 @@ from app.services.progress import mastery_map, mastery_report, module_states, pr
 
 router = APIRouter(tags=["course"])
 
-LESSON_KINDS = {"inspect", "represent", "demo", "compare"}
+# Explore / watch activities: completion only, nothing to grade (lessons are graded on their checks).
+EXPLORE_KINDS = {"inspect", "represent", "demo", "compare"}
 INSPECT_CHECKLIST = {"vertex", "edge", "directed", "directed-edge", "degree"}
 FORMATIVE_TRY_CREDIT = {1: 1.0, 2: 0.7, 3: 0.4}
 # A hint (HINT_COST, shared with traces) is cheaper than a wrong guess (1.0 -> 0.7), so asking
@@ -51,13 +53,15 @@ def _resolve_config(activity: Activity) -> dict[str, Any]:
     if activity.kind == "quiz":
         a = ASSESSMENTS[cfg["assessment"]]
         cfg.update(mode=a.mode, item_count=len(a.items), pass_mark=a.pass_mark)
+    if activity.kind == "lesson":
+        cfg["lesson"] = lesson_payload(cfg["lesson"])
     return cfg
 
 
 def _module_payload(m: Module) -> dict[str, Any]:
     return {
         "slug": m.slug, "order": m.order, "title": m.title, "tagline": m.tagline, "story": m.story,
-        "objective": m.objective, "outcome": m.outcome, "icon": m.icon,
+        "objective": m.objective, "outcome": m.outcome, "icon": m.icon, "track": m.track, "lesson": m.lesson,
         "activities": [{**a.model_dump(), "config": _resolve_config(a)} for a in m.activities],
     }
 
@@ -139,7 +143,23 @@ def submit(activity_id: str, body: SubmitIn, user: User = Depends(get_current_us
                                payload={"path": path}, result=result)
         return {"result": result, "reward": reward}
 
-    if activity.kind in LESSON_KINDS:
+    if activity.kind == "lesson":
+        # Checks are ungraded, but a lesson only counts once every one of them has been answered.
+        checks = LESSONS[cfg["lesson"]].checks()
+        answers = data.get("answers") or {}
+        if not isinstance(answers, dict) or any(answers.get(c.id) != c.answer for c in checks):
+            raise HTTPException(422, "Answer every check in the lesson first")
+        raw_tries = data.get("tries") if isinstance(data.get("tries"), dict) else {}
+        tries = {c.id: max(1, min(int(t), len(c.options))) for c in checks
+                 if isinstance(t := raw_tries.get(c.id), int) and not isinstance(t, bool)}
+        # Tries per check are kept for the Evaluate phase: which ideas needed a second look.
+        result = {"checks": len(checks), "first_try": sum(1 for t in tries.values() if t == 1), "tries": tries}
+        reward = record_result(db, user, activity, kind="lesson", completed=True, score=1.0, stars=3,
+                               payload={"answers": {c.id: c.answer for c in checks}, "tries": tries},
+                               result=result)
+        return {"result": result, "reward": reward}
+
+    if activity.kind in EXPLORE_KINDS:
         if activity.kind == "inspect" and not INSPECT_CHECKLIST <= set(data.get("discovered", [])):
             raise HTTPException(422, "Finish the discovery checklist first")
         reward = record_result(db, user, activity, kind="lesson", completed=True, score=1.0, stars=3,
