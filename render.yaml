@@ -1,0 +1,42 @@
+# Render Blueprint: free hosting for Ariadne (see "Free hosting" in README.md).
+# Postgres lives on Neon (its free plan doesn't expire); Render hosts the API and the web app.
+# Deploy: Render dashboard -> New -> Blueprint -> this repo -> paste the Neon URL when asked.
+services:
+  # FastAPI backend. The container runs migrations on start, then serves /api/*.
+  - type: web
+    name: ariadne-cos750-api
+    runtime: docker
+    plan: free
+    region: frankfurt # same region as the Neon database
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    healthCheckPath: /api/health
+    buildFilter:
+      paths:
+        - backend/**
+    envVars:
+      # Neon direct (unpooled) connection string, starting postgresql+psycopg://
+      - key: ARIADNE_DATABASE_URL
+        sync: false
+      - key: ARIADNE_JWT_SECRET
+        generateValue: true
+
+  # React frontend. /api/* is forwarded to the backend, so the browser stays same-origin (no CORS).
+  - type: web
+    name: ariadne-cos750
+    runtime: static
+    buildCommand: cd frontend && npm ci && npm run build
+    staticPublishPath: ./frontend/dist
+    buildFilter:
+      paths:
+        - frontend/**
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+    routes:
+      - type: rewrite
+        source: /api/*
+        destination: https://ariadne-cos750-api.onrender.com/api/*
+      - type: rewrite
+        source: /*
+        destination: /index.html
