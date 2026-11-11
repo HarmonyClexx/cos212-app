@@ -101,8 +101,9 @@ Postgres is deleted after 30 days.
    https://ariadne-cos750-api.onrender.com, so no CORS setup is needed.
 
 **Free-tier caveats:** the API sleeps after 15 idle minutes and the next request takes 30–60 s, so
-open the site a minute before a demo. For marking, add `ARIADNE_UNLOCK_ALL=true` to the API's
-environment in the Render dashboard.
+open the site a minute before a demo. The live site currently unlocks every module
+(`ARIADNE_UNLOCK_ALL: "true"` in `render.yaml`); set it to `"false"`, push, then **Manual sync** the
+Blueprint to restore normal progression.
 
 ## How the design document maps to the app
 
