@@ -20,6 +20,9 @@ services:
         sync: false
       - key: ARIADNE_JWT_SECRET
         generateValue: true
+      # Open every module immediately (demos and marking). "false" restores normal progression.
+      - key: ARIADNE_UNLOCK_ALL
+        value: "true"
 
   # React frontend. /api/* is forwarded to the backend, so the browser stays same-origin (no CORS).
   - type: web
