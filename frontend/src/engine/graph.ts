@@ -95,6 +95,41 @@ export function bfsOrder(g: GraphSpec, start: string): string[] {
   return bfsSteps(g, start).map((s) => s.node)
 }
 
+export type BfsTraceEvent = {
+  queue: string[]
+  visited: string[]
+} & (
+  | { kind: 'discover'; node: string; from: string | null; level: number }
+  | { kind: 'dequeue'; node: string }
+  | { kind: 'complete' }
+)
+
+export function bfsTrace(g: GraphSpec, start: string): BfsTraceEvent[] {
+  const adj = adjacency(g)
+  const level: Record<string, number> = { [start]: 0 }
+  const queue = [start]
+  const visited = [start]
+  const events: BfsTraceEvent[] = [
+    { kind: 'discover', node: start, from: null, level: 0, queue: [...queue], visited: [...visited] },
+  ]
+  while (queue.length) {
+    const cur = queue.shift()!
+    events.push({ kind: 'dequeue', node: cur, queue: [...queue], visited: [...visited] })
+    for (const n of adj[cur]) {
+      if (!(n in level)) {
+        level[n] = level[cur] + 1
+        queue.push(n)
+        visited.push(n)
+        events.push({
+          kind: 'discover', node: n, from: cur, level: level[n], queue: [...queue], visited: [...visited],
+        })
+      }
+    }
+  }
+  events.push({ kind: 'complete', queue: [...queue], visited: [...visited] })
+  return events
+}
+
 export function listJoin(items: string[]): string {
   if (items.length <= 1) return items.join('')
   return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`
