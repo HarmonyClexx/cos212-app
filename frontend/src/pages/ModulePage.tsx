@@ -5,6 +5,7 @@ import type { Activity, Reward } from '../api/types'
 import { CompareActivity } from '../activities/CompareActivity'
 import { DemoActivity } from '../activities/DemoActivity'
 import { InspectActivity } from '../activities/InspectActivity'
+import { LessonActivity } from '../activities/LessonActivity'
 import { MazeActivity } from '../activities/MazeActivity'
 import { QuizActivity } from '../activities/QuizActivity'
 import { RepresentActivity } from '../activities/RepresentActivity'
@@ -16,6 +17,7 @@ import { BLOOM_COLORS, Stars } from '../components/bits'
 import { flushQuizDraft } from '../activities/useQuizDraft'
 
 const COMPONENTS: Record<Activity['kind'], (p: ActivityProps) => JSX.Element> = {
+  lesson: LessonActivity,
   maze: MazeActivity,
   inspect: InspectActivity,
   represent: RepresentActivity,
@@ -26,7 +28,7 @@ const COMPONENTS: Record<Activity['kind'], (p: ActivityProps) => JSX.Element> = 
 }
 
 const KIND_LABEL: Record<Activity['kind'], string> = {
-  maze: 'Explore', inspect: 'Explore', represent: 'Explore', demo: 'Watch', trace: 'Practice', compare: 'Watch', quiz: 'Assess',
+  lesson: 'Learn', maze: 'Explore', inspect: 'Explore', represent: 'Explore', demo: 'Watch', trace: 'Practice', compare: 'Watch', quiz: 'Assess',
 }
 
 const OBJ = {
@@ -65,6 +67,10 @@ export function ModulePage() {
     ?? acts[0]
   const Component = COMPONENTS[current.kind]
   const obj = mod.objective ? OBJ[mod.objective] : null
+  const course = mod.track === 'course'
+  const gameCount = modules ? modules.filter((m) => m.track === 'game').length - 1 : 6
+  // The intro-course lesson that teaches this module, if the learner can open it.
+  const lesson = mod.lesson ? modules?.flatMap((m) => m.activities.map((a) => ({ m, a }))).find((x) => x.a.id === mod.lesson) : undefined
 
   const goNext = () => {
     const next = reward?.reward.next_activity
@@ -79,7 +85,7 @@ export function ModulePage() {
     <div>
       <div className="row small" style={{ marginBottom: 14 }}>
         <Link to="/" className="btn sm ghost"><Icon name="chevronLeft" size={16} /> Map</Link>
-        <span className="faint">Module {mod.order} of 6</span>
+        <span className="faint">{course ? `Intro course · ${acts.length} short lessons` : `Module ${mod.order} of ${gameCount}`}</span>
       </div>
 
       <div className="module-hero">
@@ -92,10 +98,15 @@ export function ModulePage() {
           <Icon name="target" size={20} className="ic" />
           <div>
             <div className="row" style={{ gap: 6, marginBottom: 4, flexWrap: 'wrap' }}>
-              <span className="eyebrow">{mod.objective ? `Objective ${mod.objective}` : mod.order === 0 ? 'Warm-up' : 'All objectives'}</span>
+              <span className="eyebrow">{course ? 'Start here' : mod.objective ? `Objective ${mod.objective}` : mod.order === 0 ? 'Warm-up' : 'All objectives'}</span>
               {obj && <span className={BLOOM_COLORS[obj.bloom] ?? 'chip'}>{obj.bloom} · {obj.verb}</span>}
             </div>
             <div className="small">{mod.outcome}</div>
+            {lesson?.a.unlocked && (
+              <Link to={`/learn/${lesson.m.slug}/${lesson.a.id}`} className="revisit small">
+                <Icon name="book" size={14} /> Need a refresher? Revisit the lesson <b>{lesson.a.title}</b>
+              </Link>
+            )}
           </div>
         </div>
       </div>
@@ -130,6 +141,7 @@ export function ModulePage() {
         <RewardModal
           reward={reward.reward}
           graded={reward.meta.graded}
+          title={reward.meta.title}
           subtitle={reward.meta.subtitle}
           onRetry={() => { setReward(null); setRunKey((k) => k + 1) }}
           onContinue={goNext}

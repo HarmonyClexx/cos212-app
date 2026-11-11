@@ -25,6 +25,28 @@ def _add(g: dict[str, Any]) -> None:
     GRAPHS[g["id"]] = g
 
 
+# --- Intro course -----------------------------------------------------------------------
+# Deliberately different from the game's graphs, so a lesson never hands out a quiz answer.
+# A triangle (A-B-C) for the first cycle, a junction (B, D) and two leaves (E, F) for degree.
+_BASIC_POS = {"A": (10, 40), "B": (36, 12), "C": (36, 66), "D": (64, 38), "E": (92, 14), "F": (92, 62)}
+_add(_g("intro-basic", _BASIC_POS, "A-B A-C B-C B-D D-E D-F"))
+_add(_g("intro-basic-directed", _BASIC_POS, "A>B C>A B>C B>D D>E F>D", directed=True))
+
+_INTRO_REP_POS = {"A": (10, 14), "B": (40, 40), "C": (10, 66), "D": (70, 40), "E": (94, 14)}
+_add(_g("intro-rep", _INTRO_REP_POS, "A-B A-C B-C B-D D-E"))
+_add(_g("intro-rep-directed", _INTRO_REP_POS, "A>B C>A B>C B>D E>D", directed=True))
+
+# A full binary tree: DFS (A B D E C F G) and BFS (A B C D E F G) differ from the third visit on.
+_add(_g("intro-tree", {
+    "A": (50, 8), "B": (26, 36), "C": (74, 36), "D": (12, 66), "E": (40, 66), "F": (60, 66), "G": (88, 66),
+}, "A-B A-C B-D B-E C-F C-G"))
+
+# A dead-end corridor (C-D, popped twice in a row) and a loop (A-B-E-F-A) that only the
+# visited set gets DFS out of.
+_add(_g("intro-corridor", {
+    "A": (8, 40), "B": (32, 14), "C": (60, 8), "D": (90, 8), "E": (60, 40), "F": (32, 66), "G": (70, 70),
+}, "A-B B-C C-D B-E E-F F-A F-G"))
+
 # --- Module 0: the labyrinth (fog-of-war exploration) -------------------------------------
 # Rooms laid out on a grid so it *feels* like a maze. Has dead ends (D, J, L) and a loop
 # (A-B-E-H-G-F-A) so learners discover on their own why chalk marks matter.

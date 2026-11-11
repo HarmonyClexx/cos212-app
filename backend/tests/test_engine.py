@@ -7,8 +7,9 @@ a quiz explanation is recomputed here, so a typo in course content fails CI.
 import pytest
 
 from app.content.assessments import ASSESSMENTS
-from app.content.course import ACTIVITIES, MODULES, OBJECTIVES
+from app.content.course import ACTIVITIES, MODULES, MODULES_BY_SLUG, OBJECTIVES
 from app.content.graphs import GRAPHS
+from app.content.lessons import LESSONS
 from app.engine.graph import Graph
 from app.engine.replay import TraceAction, grade_trace
 from app.engine.traversal import bfs_order, dfs_order, dfs_trace
@@ -31,6 +32,8 @@ def G(gid: str) -> Graph:
     ("wide", "A", "ABEJFCGDHI", "ABCDEFGHIJ"),
     ("final-1", "A", "ABCDEFGH", "ABFCEGHD"),
     ("final-2", "C", "CABDFE", "CAEBDF"),
+    ("intro-tree", "A", "ABDECFG", "ABCDEFG"),
+    ("intro-corridor", "A", "ABCDEFG", "ABFCEGD"),
 ])
 def test_orders(gid: str, start: str, dfs: str, bfs: str) -> None:
     assert "".join(dfs_order(G(gid), start)) == dfs
@@ -115,6 +118,8 @@ def test_every_activity_references_real_content() -> None:
                 assert act.config[key] in GRAPHS, act.id
         if act.kind == "quiz":
             assert act.config["assessment"] in ASSESSMENTS, act.id
+        if act.kind == "lesson":
+            assert act.config["lesson"] in LESSONS, act.id
         if "start" in act.config:
             assert act.config["start"] in G(act.config["graph"]).nodes
 
@@ -156,7 +161,76 @@ def test_formative_items_have_full_scaffolding() -> None:
 
 
 def test_module_order_is_contiguous() -> None:
-    assert [m.order for m in MODULES] == list(range(len(MODULES)))
+    for track in ("course", "game"):
+        orders = [m.order for m in MODULES if m.track == track]
+        assert orders == list(range(len(orders))), track
+    # The intro course comes before the game it prepares learners for.
+    assert [m.track for m in MODULES] == sorted((m.track for m in MODULES), key=["course", "game"].index)
+
+
+# --- intro course ------------------------------------------------------------------------------
+
+def test_lessons_are_well_formed() -> None:
+    check_ids: list[str] = []
+    for lesson in LESSONS.values():
+        assert lesson.checks(), lesson.id
+        assert lesson.practice in MODULES_BY_SLUG, lesson.id
+        for page in lesson.pages:
+            fig = page.figure
+            if fig:
+                assert all(g in GRAPHS for g in fig.graphs), page.id
+                needs = {"graph": 1, "neighbours": 1, "representation": 1, "trace": 1, "orders": 1}
+                assert len(fig.graphs) >= needs.get(fig.kind, 0), page.id
+                if fig.kind in ("trace", "orders"):
+                    assert fig.start in G(fig.graphs[0]).nodes, page.id
+                for gid in fig.graphs:
+                    universe = set(G(gid).nodes) | G(gid).edge_ids()
+                    assert set(fig.highlight) <= universe, (page.id, gid)
+            if page.check:
+                c = page.check
+                assert 0 <= c.answer < len(c.options) and len(c.why) == len(c.options), c.id
+                assert len(set(c.options)) == len(c.options), c.id
+                check_ids.append(c.id)
+    assert len(check_ids) == len(set(check_ids))
+
+
+def test_every_objective_has_a_lesson_and_its_module_links_back() -> None:
+    lesson_activity = {a.config["lesson"]: a for m in MODULES if m.track == "course" for a in m.activities}
+    assert {LESSONS[k].objective for k in lesson_activity} == {o.id for o in OBJECTIVES}
+    for key, act in lesson_activity.items():
+        assert act.objective == LESSONS[key].objective
+        assert MODULES_BY_SLUG[LESSONS[key].practice].lesson == act.id, key
+    for m in MODULES:
+        if m.track == "game" and m.objective:
+            assert m.lesson and ACTIVITIES[m.lesson][1].kind == "lesson", m.slug
+
+
+def test_lesson_checks_match_graph_facts() -> None:
+    """Every graph fact a lesson check (or its explanation) relies on, recomputed."""
+    basic, directed = G("intro-basic"), G("intro-basic-directed")
+    assert len(basic.nodes) == 6 and len(basic.edge_ids()) == 6
+    assert basic.adjacency()["B"] == ["A", "C", "D"] and basic.degree("B") == 3
+    assert basic.degree("D") == 3 and basic.degree("E") == basic.degree("F") == 1
+    assert list(directed.neighbours("D")) == ["E"]
+    assert {u for u in directed.nodes if "D" in directed.neighbours(u)} == {"B", "F"}
+    assert {"A-B", "B-C", "A-C"} <= basic.edge_ids() and "B-F" not in basic.edge_ids()
+
+    rep_u, rep_d = G("intro-rep"), G("intro-rep-directed")
+    assert rep_u.adjacency()["B"] == ["A", "C", "D"]
+    assert rep_d.adjacency()["D"] == [] and {"B->D", "E->D"} <= rep_d.edge_ids()
+
+    assert list(G("intro-tree").neighbours("B")) == ["A", "D", "E"]
+
+    corridor = G("intro-corridor")
+    events = dfs_trace(corridor, "A")
+    kinds = [(e.kind, e.node) for e in events]
+    d = kinds.index(("backtrack", "D"))
+    assert kinds[d + 1] == ("backtrack", "C") and kinds[d + 2] == ("visit", "E")  # the double pop
+    at_f = next(e for e in events if e.kind == "visit" and e.node == "F")
+    assert at_f.visited == set("ABCDEF") and list(corridor.neighbours("F")) == ["A", "E", "G"]
+    at_g = next(e for e in events if e.kind == "visit" and e.node == "G")
+    assert at_g.stack == tuple("ABEFG")
+    assert {"A-B", "B-E", "E-F", "A-F", "F-G"} <= corridor.edge_ids()  # the loop, and A-F-G is shorter
 
 
 # --- item grading -----------------------------------------------------------------------------
@@ -197,3 +271,13 @@ def test_level_curve() -> None:
     assert level_info(0)["level"] == 1
     assert level_info(100)["level"] == 2
     assert level_info(10_000)["next"] is None
+
+
+def test_weak_mastery_sends_the_learner_back_to_the_lesson() -> None:
+    from types import SimpleNamespace as Row
+
+    from app.services.progress import module_states, recommendations
+    mastery = {1: Row(objective=1, value=0.2), 2: Row(objective=2, value=0.5)}
+    revise = {r["objective"]: r for r in recommendations(module_states({}), mastery) if r["type"] == "revise"}
+    assert (revise[1]["module"], revise[1]["activity_id"]) == ("intro", "l1-graphs")  # struggling: re-learn
+    assert revise[2]["module"] == "representation"  # developing: practise again
