@@ -26,7 +26,7 @@ services:
     environment:
       ARIADNE_DATABASE_URL: postgresql+psycopg://ariadne:ariadne@db:5432/ariadne
       ARIADNE_JWT_SECRET: ${ARIADNE_JWT_SECRET:-change-me-in-production}
-      ARIADNE_UNLOCK_ALL: ${ARIADNE_UNLOCK_ALL:-false}
+      ARIADNE_UNLOCK_ALL: ${ARIADNE_UNLOCK_ALL:-true}
     depends_on:
       db:
         condition: service_healthy
