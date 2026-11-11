@@ -27,6 +27,7 @@ const P: Record<string, JSX.Element> = {
   chevronRight: <path d="M9 6l6 6-6 6" />,
   door: <><path d="M5.5 21V4a1 1 0 0 1 1-1h11a1 1 0 0 1 1 1v17M3 21h18" /><circle cx="15" cy="12.5" r=".6" fill="currentColor" /></>,
   nodes: <><circle cx="6" cy="6" r="2.6" /><circle cx="18" cy="6" r="2.6" /><circle cx="12" cy="18" r="2.6" /><path d="M8.6 6h6.8M7.2 8.3l3.6 7.4M16.8 8.3l-3.6 7.4" /></>,
+  book: <><path d="M12 6.5C10 5 7 4.5 3.5 5v13c3.5-.5 6.5 0 8.5 1.5 2-1.5 5-2 8.5-1.5V5c-3.5-.5-6.5 0-8.5 1.5z" /><path d="M12 6.5v13" /></>,
   table: <><rect x="3" y="4" width="18" height="16" rx="2.5" /><path d="M3 10h18M3 15h18M9 4v16" /></>,
   dive: <><path d="M12 3v13M6.5 10.5L12 16l5.5-5.5" /><path d="M4.5 20.5h15" /></>,
   undo: <><path d="M9 14L4 9l5-5" /><path d="M4 9h10.5a6 6 0 0 1 0 12H11" /></>,

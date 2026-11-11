@@ -1,8 +1,13 @@
-"""The course: seven modules that follow the team's ADDIE design document.
+"""The course: an intro course, then seven game modules that follow the team's ADDIE design.
 
-Module 0 is the problem-centred activation (Merrill / Gagne event 3): learners solve a
-maze *before* being told it is a graph. Modules 1-5 map one-to-one onto Objectives 1-5
-and storyboard Frames 1-4. Module 6 is the summative assessment.
+The intro course (track "course") is the *explanation* step of design doc 2.2: five short
+lessons, one per learning section 2.3.1-2.3.5 (see content/lessons.py). The game (track
+"game") then puts each idea to work and assesses it.
+
+Game module 0 is the problem-centred activation (Merrill / Gagne event 3): a maze that is
+only afterwards revealed to be a graph. Modules 1-5 map one-to-one onto Objectives 1-5 and
+storyboard Frames 1-4, and each links back to the lesson that teaches it. Module 6 is the
+summative assessment.
 """
 
 from app.content.schema import Activity, Module, Objective
@@ -27,6 +32,32 @@ OBJECTIVES: list[Objective] = [
 
 MODULES: list[Module] = [
     Module(
+        slug="intro", order=0, icon="book", objective=None, track="course",
+        title="Intro course",
+        tagline="Learn the ideas first. Then play them.",
+        story="Before Theseus stepped into the Labyrinth, Ariadne explained how it works. Five short lessons, "
+              "about three minutes each: read, try the examples, answer the quick checks.",
+        outcome="Know the ideas the game uses: graphs, adjacency lists and matrices, stacks, DFS, backtracking, "
+                "queues and BFS.",
+        activities=[
+            Activity(id="l1-graphs", kind="lesson", xp=20, objective=1, title="What is a graph?",
+                     summary="Vertices, edges, neighbours, direction and cycles: the words the whole course uses.",
+                     config={"lesson": "graphs"}),
+            Activity(id="l2-representation", kind="lesson", xp=20, objective=2, title="Writing a graph down",
+                     summary="Adjacency lists and adjacency matrices: how a program stores a graph.",
+                     config={"lesson": "representation"}),
+            Activity(id="l3-dfs", kind="lesson", xp=20, objective=3, title="Depth-first search",
+                     summary="Stacks, the DFS rule, and a complete run you can step through.",
+                     config={"lesson": "dfs"}),
+            Activity(id="l4-backtracking", kind="lesson", xp=20, objective=4, title="Dead ends & backtracking",
+                     summary="Why DFS pops, why it needs chalk marks, and what the stack is telling you.",
+                     config={"lesson": "backtracking"}),
+            Activity(id="l5-bfs", kind="lesson", xp=20, objective=5, title="DFS vs BFS",
+                     summary="Queues, breadth-first search, and why the two explore in different orders.",
+                     config={"lesson": "dfs-vs-bfs"}),
+        ],
+    ),
+    Module(
         slug="labyrinth", order=0, icon="door", objective=None,
         title="The Labyrinth",
         tagline="Find the lair. Don't get lost.",
@@ -41,6 +72,7 @@ MODULES: list[Module] = [
     ),
     Module(
         slug="anatomy", order=1, icon="nodes", objective=1,
+        lesson="l1-graphs",
         title="Anatomy of a Graph",
         tagline="Rooms are vertices. Corridors are edges.",
         story="Ariadne unrolls a map of the Labyrinth. It isn't a drawing of walls – it's a graph.",
@@ -56,6 +88,7 @@ MODULES: list[Module] = [
     ),
     Module(
         slug="representation", order=2, icon="table", objective=2,
+        lesson="l2-representation",
         title="Mapping the Maze",
         tagline="How a computer remembers who is next to whom.",
         story="A computer can't see a drawing. To explore the Labyrinth it needs the map written down as data.",
@@ -71,6 +104,7 @@ MODULES: list[Module] = [
     ),
     Module(
         slug="dfs", order=3, icon="dive", objective=3,
+        lesson="l3-dfs",
         title="Into the Depths",
         tagline="Go as deep as you can. Then go back.",
         story="Theseus's rule was simple: always take the first unexplored corridor, and only turn back at a dead end.",
@@ -92,6 +126,7 @@ MODULES: list[Module] = [
     ),
     Module(
         slug="backtracking", order=4, icon="undo", objective=4,
+        lesson="l4-backtracking",
         title="Dead Ends & the Thread",
         tagline="You hold the thread now.",
         story="At a dead end Theseus winds the thread back to the last junction with an unexplored corridor. "
@@ -114,6 +149,7 @@ MODULES: list[Module] = [
     ),
     Module(
         slug="dfs-vs-bfs", order=5, icon="split", objective=5,
+        lesson="l5-bfs",
         title="Deep vs Wide",
         tagline="Two explorers, one labyrinth.",
         story="Theseus dives deep with his thread. His rival sends scouts out in widening rings. Who is right?",

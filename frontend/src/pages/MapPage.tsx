@@ -1,4 +1,5 @@
-// The course map is itself a path through a labyrinth: modules are rooms, the golden thread
+// The course map. Part 1 is the intro course: five short lessons that explain the ideas.
+// Part 2 is the game, itself a path through a labyrinth: modules are rooms, the golden thread
 // runs through every module you've completed, and the next room pulses.
 
 import { useNavigate } from 'react-router-dom'
@@ -58,6 +59,51 @@ function QuestMap({ modules }: { modules: ModuleSummary[] }) {
         })}
       </svg>
     </div>
+  )
+}
+
+function IntroCourse({ course }: { course: ModuleSummary }) {
+  const navigate = useNavigate()
+  const lessons = course.activities
+  const done = lessons.filter((a) => a.completed).length
+  const next = lessons.find((a) => a.unlocked && !a.completed)
+  return (
+    <section className={`card intro-course ${course.completed ? 'complete' : ''}`} aria-labelledby="intro-title">
+      <div className="row wrap" style={{ alignItems: 'flex-start' }}>
+        <div style={{ flex: 1, minWidth: 220 }}>
+          <div className="eyebrow" style={{ color: course.completed ? 'var(--chalk)' : 'var(--brand)' }}>
+            Part 1 · {course.completed ? 'Complete' : 'Start here'}
+          </div>
+          <h2 id="intro-title" style={{ marginTop: 4 }}><Icon name="book" size={20} /> {course.title}</h2>
+          <p className="muted small" style={{ marginTop: 4 }}>
+            {course.completed
+              ? 'You can come back to any lesson whenever you need a refresher.'
+              : 'Five short lessons explain the ideas first. The game then makes you use them.'}
+          </p>
+        </div>
+        <div className="intro-progress">
+          <span className="small muted"><b style={{ color: 'var(--ink)' }}>{done}</b>/{lessons.length} lessons</span>
+          <Meter value={done / lessons.length} color={course.completed ? 'var(--chalk)' : 'var(--brand)'} label="Intro course progress" />
+          {next && (
+            <button className="btn primary sm" onClick={() => navigate(`/learn/${course.slug}/${next.id}`)}>
+              <Icon name="play" size={14} /> {done ? 'Continue' : 'Start the course'}
+            </button>
+          )}
+        </div>
+      </div>
+      <ol className="lesson-tiles">
+        {lessons.map((a, i) => (
+          <li key={a.id}>
+            <button className={`lesson-tile ${a.completed ? 'done' : ''} ${a.id === next?.id ? 'current' : ''}`}
+              disabled={!a.unlocked} onClick={() => navigate(`/learn/${course.slug}/${a.id}`)}
+              aria-label={`Lesson ${i + 1}: ${a.title}${a.completed ? ', completed' : !a.unlocked ? ', locked' : ''}`}>
+              <span className="num">{a.completed ? <Icon name="check" size={15} /> : !a.unlocked ? <Icon name="lock" size={13} /> : i + 1}</span>
+              <span className="t">{a.title}</span>
+            </button>
+          </li>
+        ))}
+      </ol>
+    </section>
   )
 }
 
@@ -131,7 +177,7 @@ function Sidebar({ me, modules }: { me: Me; modules: ModuleSummary[] }) {
       <div className="card">
         <div className="card-title"><Icon name="trophy" size={18} /> Badges <span className="faint small">{earned.length}/{me.badges.length}</span></div>
         <div className="badge-grid">
-          {me.badges.slice(0, 10).map((b) => (
+          {me.badges.map((b) => (
             <div key={b.id} className={`badge-tile ${b.earned_at ? 'earned' : ''}`} title={`${b.name}: ${b.description}`}>
               <div className="medal"><Icon name={b.earned_at ? b.icon : 'lock'} size={22} /></div>
               <span>{b.name}</span>
@@ -148,18 +194,28 @@ export function MapPage() {
   const { data: modules, isLoading } = useModules()
   if (isLoading || !modules || !me) return <div className="map-layout"><div className="skeleton" style={{ height: 560 }} /><div className="skeleton" style={{ height: 560 }} /></div>
   const firstTime = me.stats.completed === 0
+  const course = modules.find((m) => m.track === 'course')
+  const game = modules.filter((m) => m.track === 'game')
   return (
     <>
       <div style={{ marginBottom: 20 }}>
         <div className="eyebrow">{firstTime ? 'Welcome, explorer' : `Welcome back, ${me.display_name}`}</div>
         <h1 style={{ marginTop: 6 }}>{firstTime ? 'Your thread starts here.' : 'The Labyrinth awaits.'}</h1>
-        <p className="muted" style={{ marginTop: 8, maxWidth: 640 }}>
-          Seven rooms stand between you and mastery of depth-first search. Each one unlocks the next — and the golden thread
-          marks the way you have come.
+        <p className="muted" style={{ marginTop: 8, maxWidth: 680 }}>
+          {course && !course.completed
+            ? `Start with the intro course: five short lessons on graphs and depth-first search. Then the ${game.length} rooms of the Labyrinth put what you learned to work.`
+            : `${game.length} rooms stand between you and mastery of depth-first search.`}
+          {' '}Each one unlocks the next, and the golden thread marks the way you have come.
         </p>
       </div>
       <div className="map-layout">
-        <QuestMap modules={modules} />
+        <div className="side-stack" style={{ gap: 22 }}>
+          {course && <IntroCourse course={course} />}
+          <div>
+            <div className="eyebrow" style={{ margin: '0 0 8px 4px' }}>Part 2 · The game</div>
+            <QuestMap modules={game} />
+          </div>
+        </div>
         <Sidebar me={me} modules={modules} />
       </div>
     </>
