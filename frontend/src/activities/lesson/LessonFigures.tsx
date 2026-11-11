@@ -7,7 +7,7 @@ import type { LessonFigure } from '../../api/types'
 import { QueuePanel, StackPanel, VisitedStrip } from '../../components/DataStructures'
 import { GraphCanvas, type EdgeMark, type NodeMark } from '../../components/GraphCanvas'
 import { Icon } from '../../components/Icon'
-import { adjacency, bfsSteps, dfsOrder, bfsOrder, dfsTrace, edgeId, listJoin, type GraphSpec } from '../../engine/graph'
+import { adjacency, bfsTrace, dfsOrder, bfsOrder, dfsTrace, edgeId, listJoin, type GraphSpec } from '../../engine/graph'
 import { narrate } from '../../engine/tracer'
 import { addMark, traceVisuals } from '../shared'
 
@@ -225,33 +225,49 @@ function DfsStepper({ g, start }: { g: GraphSpec; start: string }) {
 }
 
 function BfsStepper({ g, start }: { g: GraphSpec; start: string }) {
-  const steps = useMemo(() => bfsSteps(g, start), [g, start])
+  const steps = useMemo(() => bfsTrace(g, start), [g, start])
+  const adj = useMemo(() => adjacency(g), [g])
   const [i, setI] = useState(0)
-  const seen = steps.slice(0, i + 1)
+  const discoveries = steps.slice(0, i + 1).filter((s) => s.kind === 'discover')
   const now = steps[i]
   const nodeMarks: Record<string, NodeMark[]> = {}
   const edgeMarks: Record<string, EdgeMark[]> = {}
-  for (const s of seen) {
+  for (const s of discoveries) {
     nodeMarks[s.node] = ['visited']
     if (s.from) edgeMarks[edgeId(g, s.from, s.node)] = ['traversed']
   }
-  nodeMarks[now.node] = ['visited', 'current']
-  if (now.from) addMark(nodeMarks, [now.from], 'hint')
-  const badges = Object.fromEntries(seen.map((s, k) => [s.node, { text: k + 1, tone: 'chalk' as const }]))
-  const body = now.from
-    ? `${now.from} came off the front of the queue. Its unvisited neighbour ${now.node} (level ${now.level}) is marked visited and joins the back.`
-    : `Start at ${now.node}: mark it visited and enqueue it.`
+  const processing = now.kind === 'dequeue' ? now.node : now.kind === 'discover' ? now.from : null
+  if (processing) addMark(nodeMarks, [processing], 'hint')
+  if (now.kind === 'discover') addMark(nodeMarks, [now.node], 'current')
+  const badges = Object.fromEntries(discoveries.map((s, k) => [s.node, { text: k + 1, tone: 'chalk' as const }]))
+  let title: string
+  let body: string
+  if (now.kind === 'complete') {
+    title = 'BFS complete'
+    body = 'The queue is empty and every reachable vertex has been processed. BFS is finished.'
+  } else if (now.kind === 'dequeue') {
+    const unvisited = adj[now.node].filter((n) => !now.visited.includes(n))
+    title = `Dequeue ${now.node}`
+    body = `${now.node} leaves the front of the queue. ${unvisited.length
+      ? `Now examine its unvisited neighbours, ${listJoin(unvisited)}, in alphabetical order.`
+      : 'It has no unvisited neighbours, so no new vertices are added.'}`
+  } else {
+    title = `Visit ${now.node}`
+    body = now.from
+      ? `${now.node} is an unvisited neighbour of ${now.from} (level ${now.level}). Mark it visited and enqueue it at the back.`
+      : `Start at ${now.node}: mark it visited and enqueue it.`
+  }
   return (
     <div className="stack-v" style={{ gap: 10 }}>
       <GraphCanvas graph={g} nodeMarks={nodeMarks} edgeMarks={edgeMarks} badges={badges} maxHeight={260}
-        ariaLabel={`BFS step ${i + 1}: visit ${now.node}`} />
+        ariaLabel={`BFS step ${i + 1}: ${title}`} />
       <StepControls i={i} last={steps.length - 1} setI={setI} />
-      <div className="fig-narration" aria-live="polite"><b>Visit {now.node}.</b> {body}</div>
+      <div className="fig-narration" aria-live="polite"><b>{title}.</b> {body}</div>
       <div className="fig-panels">
         <QueuePanel items={now.queue} title="Queue (front → back)" />
-        <VisitedStrip order={seen.map((s) => s.node)} total={g.nodes.length} />
+        <VisitedStrip order={now.visited} total={g.nodes.length} />
       </div>
-      <p className="faint tiny">Blue ring = the vertex whose neighbours BFS is discovering.</p>
+      <p className="faint tiny">Blue ring = the vertex being processed. A dequeue does not add another visit.</p>
     </div>
   )
 }

@@ -51,6 +51,18 @@ with any saved progress stays unlocked, so the course only gates people who have
 
 Ports use the course code to avoid clashing with other services: API **8750**, Postgres **5750**, Docker web **4750**.
 
+### Intro lesson recovery and stepping
+
+Unfinished lesson pages, quick-check answers and try counts are kept per account in the current
+tab's session storage. Refreshing or switching back to the same account in that tab can restore
+them; they are not account-backed drafts that follow you across devices. Older lesson drafts
+without an account owner are discarded, so an unfinished lesson may restart once. Completed
+lessons remain saved to the account.
+
+The BFS lesson shows each dequeue and each discovery/enqueue separately, then finishes with an
+empty queue. Dequeue-only steps do not change the discovery order. The game's DFS/BFS comparison
+keeps its existing discovery-based playback.
+
 ### Quiz saving and recovery
 
 Unfinished quizzes are saved to the signed-in account: answers, optional reflections, current

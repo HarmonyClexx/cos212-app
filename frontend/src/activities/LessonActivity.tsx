@@ -7,7 +7,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useModules, useSubmitActivity } from '../api/hooks'
+import { useMe, useModules, useSubmitActivity } from '../api/hooks'
 import type { LessonCheck } from '../api/types'
 import { Icon } from '../components/Icon'
 import { Inline, Prose } from '../components/Prose'
@@ -22,19 +22,21 @@ interface Saved {
 }
 
 // Per-tab convenience only: losing it just means starting the lesson from page 1 again.
-const storeKey = (id: string) => `ariadne:lesson:${id}`
-function load(id: string): Saved | null {
+const storeKey = (userId: number, id: string) => `ariadne:lesson:${userId}:${id}`
+function load(userId: number, id: string): Saved | null {
   try {
-    const raw = sessionStorage.getItem(storeKey(id))
+    // Older drafts have no owner and cannot safely be assigned to this account.
+    sessionStorage.removeItem(`ariadne:lesson:${id}`)
+    const raw = sessionStorage.getItem(storeKey(userId, id))
     return raw ? (JSON.parse(raw) as Saved) : null
   } catch {
     return null
   }
 }
-function save(id: string, s: Saved | null) {
+function save(userId: number, id: string, s: Saved | null) {
   try {
-    if (s) sessionStorage.setItem(storeKey(id), JSON.stringify(s))
-    else sessionStorage.removeItem(storeKey(id))
+    if (s) sessionStorage.setItem(storeKey(userId, id), JSON.stringify(s))
+    else sessionStorage.removeItem(storeKey(userId, id))
   } catch { /* storage unavailable: fine */ }
 }
 
@@ -71,7 +73,20 @@ function Check({ check, picked, tries, onPick }: {
   )
 }
 
-export function LessonActivity({ activity, onReward }: ActivityProps) {
+export function LessonActivity(props: ActivityProps) {
+  const { data: me, error, refetch, isFetching } = useMe()
+  if (!me) {
+    return error ? (
+      <div className="card">
+        <p className="error-text" role="alert">Couldn’t load your account to open the lesson.</p>
+        <button className="btn" disabled={isFetching} onClick={() => void refetch()}>Retry</button>
+      </div>
+    ) : <div className="skeleton" style={{ height: 320 }} aria-label="Loading lesson" />
+  }
+  return <LearnerLesson key={`${me.id}:${props.activity.id}`} {...props} userId={me.id} />
+}
+
+function LearnerLesson({ activity, onReward, userId }: ActivityProps & { userId: number }) {
   const lesson = activity.config.lesson!
   const done = activity.state.completed
   const { data: modules } = useModules()
@@ -80,12 +95,12 @@ export function LessonActivity({ activity, onReward }: ActivityProps) {
   const top = useRef<HTMLDivElement>(null)
   const first = useRef(true)
 
-  const [saved] = useState(() => load(activity.id))
+  const [saved] = useState(() => load(userId, activity.id))
   const [page, setPage] = useState(() => Math.min(saved?.page ?? 0, lesson.pages.length))
   const [picked, setPicked] = useState<Record<string, number>>(saved?.picked ?? {})
   const [tries, setTries] = useState<Record<string, number>>(saved?.tries ?? {})
 
-  useEffect(() => save(activity.id, { page, picked, tries }), [activity.id, page, picked, tries])
+  useEffect(() => save(userId, activity.id, { page, picked, tries }), [userId, activity.id, page, picked, tries])
   useEffect(() => {
     if (first.current) { first.current = false; return }
     top.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -113,7 +128,7 @@ export function LessonActivity({ activity, onReward }: ActivityProps) {
     { data: { answers: picked, tries } },
     {
       onSuccess: ({ reward }) => {
-        save(activity.id, null)
+        save(userId, activity.id, null)
         onReward(reward, {
           graded: false,
           title: nextLesson ? 'Lesson complete' : 'Intro course complete!',
