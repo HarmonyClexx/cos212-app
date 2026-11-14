@@ -18,7 +18,7 @@ export function LeaderboardPage() {
         <div className="tiles">
           <div className="tile"><div className="label">Your rank</div><div className="value">#{data.me.rank}</div><div className="sub">of everyone in the course</div></div>
           <div className="tile"><div className="label">Your XP</div><div className="value">{data.me.xp.toLocaleString()}</div><div className="sub">Level {data.me.level} · {data.me.title}</div></div>
-          <div className="tile"><div className="label">Badges</div><div className="value">{data.me.badges}</div><div className="sub">of 10</div></div>
+          <div className="tile"><div className="label">Badges earned</div><div className="value">{data.me.badges}</div><div className="sub">of {data.badge_total} available</div></div>
         </div>
       )}
       <div className="card" style={{ padding: 0, overflowX: 'auto' }}>

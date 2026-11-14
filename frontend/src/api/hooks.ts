@@ -13,7 +13,7 @@ export const useModule = (slug: string) =>
   useQuery({ queryKey: ['module', slug], queryFn: () => api<ModuleDetail>(`/modules/${slug}`), retry: false })
 
 export const useLeaderboard = () =>
-  useQuery({ queryKey: ['leaderboard'], queryFn: () => api<{ top: LeaderRow[]; me: LeaderRow }>('/leaderboard') })
+  useQuery({ queryKey: ['leaderboard'], queryFn: () => api<{ top: LeaderRow[]; me: LeaderRow; badge_total: number }>('/leaderboard') })
 
 /** Anything that changes progress invalidates the learner-facing caches. */
 export function useProgressInvalidation() {

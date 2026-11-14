@@ -71,6 +71,30 @@ def test_auth_roundtrip(client: TestClient) -> None:
     assert client.get("/api/me").status_code == 401
 
 
+def test_leaderboard_badge_totals_match_profile(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.api import me as learner_api
+    from app.services.gamification import Badge
+
+    h = register(client)
+    for earned in (0, 1):
+        if earned:
+            finish_lesson(client, h, "l1-graphs")
+        profile = client.get("/api/me", headers=h).json()
+        board = client.get("/api/leaderboard", headers=h).json()
+        assert board["badge_total"] == len(profile["badges"])
+        assert board["me"]["badges"] == sum(bool(b["earned_at"]) for b in profile["badges"]) == earned
+        assert board["top"][0]["badges"] == earned
+
+    original_total = board["badge_total"]
+    monkeypatch.setattr(learner_api, "BADGES", [
+        *learner_api.BADGES, Badge("test-badge", "Test Badge", "A newly available badge.", "star"),
+    ])
+    profile = client.get("/api/me", headers=h).json()
+    board = client.get("/api/leaderboard", headers=h).json()
+    assert board["badge_total"] == len(profile["badges"]) == original_total + 1
+    assert board["me"]["badges"] == sum(bool(b["earned_at"]) for b in profile["badges"]) == 1
+
+
 def test_locking_and_maze(client: TestClient) -> None:
     h = register(client)
     mods = client.get("/api/modules", headers=h).json()

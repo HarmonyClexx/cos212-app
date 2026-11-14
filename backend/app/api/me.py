@@ -56,4 +56,4 @@ def leaderboard(user: User = Depends(get_current_user), db: Session = Depends(ge
         if u.xp != prev_xp:
             rank, prev_xp = i + 1, u.xp
         rows.append(row(u, rank))
-    return {"top": rows, "me": row(user, my_rank)}
+    return {"top": rows, "me": row(user, my_rank), "badge_total": len(BADGES)}
