@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom'
 import { useMe } from '../api/hooks'
 import { Icon } from '../components/Icon'
 import { BLOOM_COLORS, Meter, avatarColor, masteryStatus } from '../components/bits'
+import { RecordedQuizSummary } from '../activities/QuizEvidence'
 
 export function ProfilePage() {
   const { data: me } = useMe()
@@ -29,10 +30,15 @@ export function ProfilePage() {
       </div>
 
       <div className="card">
-        <div className="card-title"><Icon name="layers" size={18} /> Mastery report <span className="faint small">running estimate per instructional objective · target 70%</span></div>
+        <div className="card-title"><Icon name="layers" size={18} /> Practice progress <span className="faint small">running score by objective · target 70%</span></div>
+        <p className="small muted" style={{ marginBottom: 14 }}>
+          These running scores can include guided practice, helped answers and repeat attempts.
+          The 70% target is a practice reference, not proof of mastery or lecture readiness.
+          Score updates count recorded trace and quiz results, not independent assessments.
+        </p>
         <div style={{ overflowX: 'auto' }}>
           <table className="table">
-            <thead><tr><th>Objective</th><th>Skill level</th><th style={{ minWidth: 180 }}>Mastery</th><th>Status</th><th className="num">Evidence</th><th /></tr></thead>
+            <thead><tr><th>Objective</th><th>Skill level</th><th style={{ minWidth: 180 }}>Running score</th><th>Status</th><th className="num">Score updates</th><th /></tr></thead>
             <tbody>
               {me.mastery.map((m) => {
                 const st = masteryStatus(m.value, m.evidence)
@@ -41,7 +47,7 @@ export function ProfilePage() {
                     <td><b>{m.objective}. {m.title}</b><br /><span className="small faint">{m.statement}</span></td>
                     <td><span className={BLOOM_COLORS[m.bloom] ?? 'chip'}>{m.bloom}</span></td>
                     <td>
-                      <div className="row"><div style={{ flex: 1 }}><Meter value={m.value} color={st.color} target={0.7} label={`${m.title} mastery`} /></div>
+                      <div className="row"><div style={{ flex: 1 }}><Meter value={m.value} color={st.color} target={0.7} label={`${m.title} practice progress`} /></div>
                         <b style={{ width: 44, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{m.evidence ? `${Math.round(m.value * 100)}%` : '—'}</b></div>
                     </td>
                     <td><span className="status"><Icon name={st.icon} size={14} style={{ color: st.color }} /> {st.label}</span></td>
@@ -54,6 +60,8 @@ export function ProfilePage() {
           </table>
         </div>
       </div>
+
+      <RecordedQuizSummary summary={me.quiz_evidence} />
 
       <div className="card">
         <div className="card-title"><Icon name="trophy" size={18} /> Badges <span className="faint small">{earned}/{me.badges.length}</span></div>

@@ -42,7 +42,8 @@ export async function api<T>(path: string, init: { method?: string; body?: unkno
     let message = res.statusText
     try {
       const data = await res.json()
-      message = typeof data.detail === 'string' ? data.detail : Array.isArray(data.detail) ? data.detail[0]?.msg ?? message : message
+      message = typeof data.detail === 'string' ? data.detail : typeof data.detail?.message === 'string'
+        ? data.detail.message : Array.isArray(data.detail) ? data.detail[0]?.msg ?? message : message
     } catch {
       /* non-JSON error */
     }

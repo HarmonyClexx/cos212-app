@@ -155,15 +155,19 @@ function Sidebar({ me, modules }: { me: Me; modules: ModuleSummary[] }) {
       )}
 
       <div className="card">
-        <div className="card-title"><Icon name="layers" size={18} /> Mastery by objective <span className="faint small">target 70%</span></div>
+        <div className="card-title"><Icon name="layers" size={18} /> Objective progress <span className="faint small">target 70%</span></div>
+        <p className="small muted" style={{ marginBottom: 14 }}>
+          These running scores can include guided practice, helped answers and repeat attempts.
+          The 70% target is a practice reference, not proof of mastery or lecture readiness.
+        </p>
         {me.mastery.map((m) => {
           const st = masteryStatus(m.value, m.evidence)
           const mod = modules.find((x) => x.slug === m.module)
           return (
-            <div className="mastery-row" key={m.objective} title={`${m.statement} (${m.evidence} assessment${m.evidence === 1 ? '' : 's'})`}>
+            <div className="mastery-row" key={m.objective} title={`${m.statement} (${m.evidence} recorded score update${m.evidence === 1 ? '' : 's'})`}>
               <span className="name">{m.objective}. {m.title}</span>
               <span className="val">{m.evidence ? `${Math.round(m.value * 100)}%` : '—'}</span>
-              <Meter value={m.value} color={st.color} target={0.7} size="thin" label={`${m.title} mastery`} />
+              <Meter value={m.value} color={st.color} target={0.7} size="thin" label={`${m.title} practice progress`} />
               <span className="meta">
                 <span className="status"><Icon name={st.icon} size={13} style={{ color: st.color }} /> {st.label}</span>
                 <span>· {m.bloom}</span>
@@ -198,16 +202,29 @@ export function MapPage() {
   const game = modules.filter((m) => m.track === 'game')
   return (
     <>
-      <div style={{ marginBottom: 20 }}>
+      <section className="map-opening" aria-labelledby="map-opening-title" style={{ marginBottom: 20 }}>
         <div className="eyebrow">{firstTime ? 'Welcome, explorer' : `Welcome back, ${me.display_name}`}</div>
-        <h1 style={{ marginTop: 6 }}>{firstTime ? 'Your thread starts here.' : 'The Labyrinth awaits.'}</h1>
+        <h1 id="map-opening-title" style={{ marginTop: 6 }}>{firstTime ? 'Your thread starts here.' : 'The Labyrinth awaits.'}</h1>
         <p className="muted" style={{ marginTop: 8, maxWidth: 680 }}>
-          {course && !course.completed
-            ? `Start with the intro course: five short lessons on graphs and depth-first search. Then the ${game.length} rooms of the Labyrinth put what you learned to work.`
-            : `${game.length} rooms stand between you and mastery of depth-first search.`}
-          {' '}Each one unlocks the next, and the golden thread marks the way you have come.
+          Step into Theseus's role in Ariadne's Labyrinth: find the Minotaur's lair without losing your way.
+          Corridors join rooms; golden thread follows your current route, and chalk marks every room you enter.
         </p>
-      </div>
+        <p className="muted" style={{ marginTop: 8, maxWidth: 680 }}>
+          In the maze, <b>rooms are vertices</b> and <b>corridors are edges</b>.
+          Thread models the <b>current-path stack</b>; chalk records the <b>visited set</b>,
+          so rooms remain remembered after you backtrack.
+          Going deeper and returning when no unvisited neighbour remains introduces <b>depth-first search (DFS)</b>.
+        </p>
+        <p className="muted" style={{ marginTop: 8, maxWidth: 680 }}>
+          Use Ariadne before your graphs and DFS lecture, at your own pace.{' '}
+          {course && !course.completed
+            ? `Work through ${course.activities.length} short introductory lessons, then practise in the ${game.length} game modules.`
+            : course
+              ? `Revisit the introductory lessons for a refresher, and practise in the ${game.length} game modules.`
+              : `Practise graphs and DFS across the ${game.length} game modules.`}
+          {' '}Follow the recommended map route and return to any activity available to you.
+        </p>
+      </section>
       <div className="map-layout">
         <div className="side-stack" style={{ gap: 22 }}>
           {course && <IntroCourse course={course} />}

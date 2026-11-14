@@ -11,7 +11,7 @@ recorded by the server, not trusted from the browser.
 
 import hashlib
 import json
-from typing import Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
@@ -22,6 +22,7 @@ from app.content.assessments import ASSESSMENT_VERSION, ASSESSMENTS
 from app.content.course import ACTIVITIES, MODULES_BY_SLUG, OBJECTIVES
 from app.content.graphs import GRAPHS
 from app.content.lessons import LESSONS, lesson_payload
+from app.content.reserved_finals import FINAL_BANK_VERSION, FINAL_VARIANTS
 from app.content.schema import Activity, Item, Module
 from app.core.db import get_db
 from app.core.security import get_current_user
@@ -30,7 +31,26 @@ from app.engine.replay import HINT_COST, TraceAction, grade_trace
 from app.models import Attempt, User
 from app.services.gamification import record_result, stars_for_score
 from app.services.grading import MAX_HINT_LEVEL, expected_answer, grade_item, hint_content, public_item
-from app.services.progress import mastery_map, mastery_report, module_states, progress_map, recommendations
+from app.services.progress import (
+    mastery_map,
+    mastery_report,
+    module_states,
+    progress_map,
+    recommendations,
+    revision_topics,
+)
+from app.services.quiz_evidence import (
+    attempt_content,
+    content_supported,
+    evidence_report,
+    has_answer,
+    initialise_evidence,
+    mark_unanswered,
+    pin_content,
+    readable_answer,
+    record_assistance,
+    record_response,
+)
 
 router = APIRouter(tags=["course"])
 
@@ -186,6 +206,18 @@ class HintIn(OperationIn):
     item_id: str
 
 
+class ReviewIn(OperationIn):
+    request_id: str = Field(min_length=1, max_length=64)
+    revision: int = Field(ge=0)
+    item_id: str
+    topic_id: str
+    target: Literal["lesson", "practice", "fallback"]
+
+
+def _revision_topics(item: Item, detail: dict[str, Any], user: User, db: Session) -> list[dict[str, Any]]:
+    return revision_topics(item.objective, detail.get("concepts"), module_states(progress_map(db, user)))
+
+
 def _credit_if_correct(tries: int, hints: int) -> float:
     return round(max(MIN_CREDIT, FORMATIVE_TRY_CREDIT.get(tries, MIN_CREDIT) - HINT_COST * hints), 3)
 
@@ -196,7 +228,7 @@ def _help_level(st: dict[str, Any]) -> int:
 
 
 def _formative_item(att: Attempt, activity: Activity, item_id: str) -> tuple[Item, dict[str, Any]]:
-    assessment = ASSESSMENTS[activity.config["assessment"]]
+    assessment = attempt_content(att, activity)[0]
     if assessment.mode != "formative":
         raise HTTPException(status.HTTP_403_FORBIDDEN, "No feedback during the final trial")
     item = next((i for i in assessment.items if i.id == item_id), None)
@@ -234,8 +266,9 @@ def _owned_attempt(aid: int, user: User, db: Session) -> tuple[Attempt, Activity
 def _require_open(att: Attempt) -> None:
     if att.status != "open":
         raise HTTPException(status.HTTP_409_CONFLICT, "This attempt is already finished")
-    if att.payload.get("version") != ASSESSMENT_VERSION:
+    if not content_supported(att):
         raise HTTPException(status.HTTP_409_CONFLICT, "The quiz format changed. Reopen this activity to continue.")
+    pin_content(att, ACTIVITIES[att.activity_id][1])
 
 
 def _replay(att: Attempt, body: OperationIn, kind: str) -> dict[str, Any] | None:
@@ -250,7 +283,7 @@ def _replay(att: Attempt, body: OperationIn, kind: str) -> dict[str, Any] | None
     return None
 
 
-def _fingerprint(body: OperationIn, kind: str) -> str:
+def _fingerprint(body: BaseModel, kind: str) -> str:
     return hashlib.sha256(json.dumps([kind, body.model_dump()], sort_keys=True).encode()).hexdigest()
 
 
@@ -258,6 +291,9 @@ def _commit_operation(att: Attempt, body: OperationIn, kind: str, response: dict
                       db: Session) -> dict[str, Any]:
     revision = att.payload.get("revision", 0) + 1
     response = {**response, "revision": revision}
+    if kind in {"check", "hint", "review-topic", "study", "finish"}:
+        assessment = attempt_content(att, ACTIVITIES[att.activity_id][1])[0]
+        response["evidence"] = evidence_report(att, assessment.items)
     receipts = dict(att.payload.get("receipts", {}))
     if body.request_id:
         receipts[body.request_id] = {"fingerprint": _fingerprint(body, kind), "response": response}
@@ -266,38 +302,102 @@ def _commit_operation(att: Attempt, body: OperationIn, kind: str, response: dict
     return response
 
 
+def _review_result(result: dict[str, Any], states: list[dict[str, Any]]) -> dict[str, Any]:
+    return {**result, "review": [
+        {**row, "review_topics": revision_topics(row.get("objective"), (row.get("detail") or {}).get("concepts"), states)}
+        for row in result.get("review", [])
+    ]}
+
+
 def _report(att: Attempt, user: User, db: Session) -> dict[str, Any]:
+    states = module_states(progress_map(db, user))
+    items = attempt_content(att, ACTIVITIES[att.activity_id][1])[0].items if content_supported(att) else []
     return {
         "revision": att.payload.get("revision", 0),
-        "result": att.result,
+        "result": _review_result(att.result, states),
         "mastery": mastery_report(mastery_map(db, user)),
         "recommendations": recommendations(module_states(progress_map(db, user)), mastery_map(db, user)),
+        "evidence": evidence_report(att, items),
     }
 
 
 def _attempt_payload(att: Attempt, activity: Activity, user: User, db: Session) -> dict[str, Any]:
-    assessment = ASSESSMENTS[activity.config["assessment"]]
-    compatible = att.payload.get("version") == ASSESSMENT_VERSION
+    compatible = content_supported(att)
+    assessment, graphs, versions = (attempt_content(att, activity) if compatible else
+                                   (ASSESSMENTS[activity.config["assessment"]], GRAPHS, {}))
     state = att.payload.get("items", {}) if compatible else {}
     draft = att.payload.get("draft", {}) if compatible else {}
+    states = module_states(progress_map(db, user))
     return {
         "attempt_id": att.id, "status": att.status, "revision": att.payload.get("revision", 0),
         "user_id": user.id, "last_draft_request": att.payload.get("last_draft_request"),
         "mode": assessment.mode, "pass_mark": assessment.pass_mark,
-        "items": [public_item(i) for i in assessment.items],
-        "answers": draft.get("answers", {}), "reflections": draft.get("reflections", {}),
+        "items": [{**public_item(i, graphs), "task_version": versions.get(i.id)} for i in assessment.items],
+        "assessment_version": att.payload.get("version"),
+        "evidence": evidence_report(att, assessment.items),
+        "final_availability": _final_availability(activity.id, user, db) if assessment.mode == "summative" else None,
+        "answers": (att.payload.get("answers", draft.get("answers", {}))
+                    if att.status == "closed" and assessment.mode == "summative" else draft.get("answers", {})),
+        "reflections": draft.get("reflections", {}),
         "current_item": draft.get("current_item", assessment.items[0].id),
         "results": {iid: st["response"] for iid, st in state.items() if "response" in st},
         "hints": {iid: st["hint_response"] for iid, st in state.items() if "hint_response" in st},
         "revealed": {iid: st.get("revealed", False) for iid, st in state.items()},
         "last": {iid: st.get("last", "check") for iid, st in state.items()},
         "compatible": compatible,
+        "review_topics": {
+            item.id: revision_topics(item.objective, state.get(item.id, {}).get("response", {}).get("detail", {}).get("concepts"), states)
+            for item in assessment.items
+        } if assessment.mode == "formative" else {},
+        "review_support": att.payload.get("review_support", []),
+        "review_support_from_revision": att.payload.get("review_support_from_revision"),
         "report": _report(att, user, db) if att.status == "closed" else None,
     }
 
 
 class StartIn(BaseModel):
     new_attempt: bool = False
+    repeat_practice: bool = False
+    request_id: str | None = Field(default=None, min_length=1, max_length=64)
+
+
+def _final_availability(activity_id: str, user: User, db: Session,
+                        attempts: list[Attempt] | None = None) -> dict[str, Any]:
+    if attempts is None:
+        attempts = list(db.scalars(select(Attempt).where(
+            Attempt.user_id == user.id, Attempt.activity_id == activity_id, Attempt.kind == "quiz"
+        ).order_by(Attempt.id.desc())))
+    used = {
+        variant for variant, bank in FINAL_VARIANTS.items()
+        if any(a.payload.get("content", {}).get("assessment", {}).get("id",
+               a.payload.get("assessment_id")) == bank for a in attempts)
+    }
+    active = next((a for a in attempts if a.status == "open" and content_supported(a)), None)
+    states = module_states(progress_map(db, user))
+    closed = next((a for a in attempts if a.status == "closed"), None)
+    concepts: dict[int, list[str]] = {}
+    for row in (closed.result if closed else {}).get("review", []):
+        if not row.get("correct") and row.get("objective") in {o.id for o in OBJECTIVES}:
+            concepts.setdefault(row["objective"], []).extend((row.get("detail") or {}).get("concepts", []))
+    topics = [topic for o in OBJECTIVES if not concepts or o.id in concepts
+              for topic in revision_topics(o.id, concepts.get(o.id) or None, states)]
+    return {
+        "unused_versions": [v for v in FINAL_VARIANTS if v not in used],
+        "used_versions": [v for v in FINAL_VARIANTS if v in used],
+        "exhausted": len(used) == len(FINAL_VARIANTS),
+        "has_saved_attempt": active is not None or any(a.status == "closed" for a in attempts),
+        "has_open_attempt": active is not None,
+        "revision_topics": topics,
+    }
+
+
+@router.get("/activities/{activity_id}/final-availability")
+def final_availability(activity_id: str, user: Annotated[User, Depends(get_current_user)],
+                       db: Annotated[Session, Depends(get_db)]) -> dict[str, Any]:
+    _, activity = _get_activity(activity_id, user, db)
+    if activity.kind != "quiz" or ASSESSMENTS[activity.config["assessment"]].mode != "summative":
+        raise HTTPException(400, "Not a final quiz")
+    return _final_availability(activity_id, user, db)
 
 
 class DraftIn(OperationIn):
@@ -317,22 +417,54 @@ def start_attempt(activity_id: str, body: StartIn | None = None, user: User = De
     attempts = list(db.scalars(select(Attempt).where(
         Attempt.user_id == user.id, Attempt.activity_id == activity.id, Attempt.kind == "quiz"
     ).order_by(Attempt.id.desc())))
-    active = next((a for a in attempts if a.status == "open"
-                   and a.payload.get("version") == ASSESSMENT_VERSION), None)
+    if body and body.request_id:
+        acknowledged = next((a for a in attempts if body.request_id in a.payload.get("start_requests", {})), None)
+        if acknowledged:
+            if acknowledged.payload["start_requests"][body.request_id] != _fingerprint(body, "start"):
+                raise HTTPException(409, "This start request ID was already used for different options.")
+            return _attempt_payload(acknowledged, activity, user, db)
+    active = next((a for a in attempts if a.status == "open" and content_supported(a)), None)
     superseded = False
     for old in attempts:
         if old.status == "open" and old is not active:
             old.status = "superseded"
             superseded = True
     if active:
+        pin_content(active, activity)
+        if body and body.request_id:
+            active.payload = {**active.payload, "start_requests": {
+                **active.payload.get("start_requests", {}), body.request_id: _fingerprint(body, "start"),
+            }}
         db.commit()
         return _attempt_payload(active, activity, user, db)
     closed = next((a for a in attempts if a.status == "closed"), None)
     if closed and not (body and body.new_attempt):
         db.commit()
         return _attempt_payload(closed, activity, user, db)
+    assignment = None
+    if ASSESSMENTS[activity.config["assessment"]].mode == "summative":
+        availability = _final_availability(activity.id, user, db, attempts)
+        unused = availability["unused_versions"]
+        if not unused and not (body and body.repeat_practice):
+            raise HTTPException(409, {"code": "NO_UNUSED_FINAL",
+                                     "message": "Both reserved final versions have been issued. Choose revision or Repeat practice.",
+                                     "revision_topics": availability["revision_topics"]})
+        if unused and body and body.repeat_practice:
+            raise HTTPException(409, "An unused reserved final is still available.")
+        variant = unused[0] if unused else (
+            "B" if attempts[0].payload.get("final_assignment", {}).get("variant") == "A" else "A")
+        assignment = {"variant": variant, "purpose": "reserved" if unused else "repeat",
+                      "unused_at_issuance": bool(unused)}
     att = Attempt(user_id=user.id, activity_id=activity.id, kind="quiz", status="open", result={},
-                  payload={"items": {}, "version": ASSESSMENT_VERSION, "revision": 0, "draft": {}})
+                  payload={"items": {}, "version": ASSESSMENT_VERSION, "revision": 0, "draft": {},
+                           "review_support": [], "review_support_from_revision": 0,
+                           "evidence": initialise_evidence(bool(attempts))})
+    if assignment:
+        att.payload.update(version=FINAL_BANK_VERSION, assessment_id=FINAL_VARIANTS[assignment["variant"]],
+                           final_assignment=assignment, evidence=initialise_evidence(not assignment["unused_at_issuance"]))
+    if body and body.request_id:
+        att.payload["start_requests"] = {body.request_id: _fingerprint(body, "start")}
+    pin_content(att, activity)
     db.add(att)
     db.commit()
     response = _attempt_payload(att, activity, user, db)
@@ -355,7 +487,7 @@ def save_draft(aid: int, body: DraftIn, user: User = Depends(get_current_user),
     att, activity = _owned_attempt(aid, user, db)
     if cached := _replay(att, body, "draft"):
         return cached
-    items = {i.id: i for i in ASSESSMENTS[activity.config["assessment"]].items}
+    items = {i.id: i for i in attempt_content(att, activity)[0].items}
     if body.current_item not in items or not body.answers.keys() <= items.keys():
         raise HTTPException(422, "Unknown question in draft")
     if any(iid not in items or not items[iid].reflection_prompt or len(text) > 1200
@@ -389,10 +521,69 @@ def hint(aid: int, body: HintIn, user: User = Depends(get_current_user),
         _save_item(att, item, st, db)
     response = {"item_id": item.id, "level": level, "max_level": MAX_HINT_LEVEL, "charged": charged,
                 "hints": st["hints"], "worth": _credit_if_correct(st["tries"] + 1, st["hints"]),
+                "review_topics": _revision_topics(item, st.get("response", {}).get("detail", {}), user, db),
                 **hint_content(item, level)}
     st.update(hint_response=response, last="hint")
     _save_item(att, item, st, db)
+    record_assistance(att, item, "hint", body.request_id, level=level, charged=charged)
     return _commit_operation(att, body, "hint", response, db)
+
+
+@router.post("/attempts/{aid}/review-topic")
+def review_topic(aid: int, body: ReviewIn, user: Annotated[User, Depends(get_current_user)],
+                 db: Annotated[Session, Depends(get_db)]) -> dict[str, Any]:
+    _lock_learner(user, db)
+    att, activity = _owned_attempt(aid, user, db)
+    if cached := _replay(att, body, "review-topic"):
+        return cached
+    item, st = _formative_item(att, activity, body.item_id)
+    current = att.payload.get("draft", {}).get("current_item", attempt_content(att, activity)[0].items[0].id)
+    if current != item.id:
+        raise HTTPException(422, "Review help for the current question")
+    topic = next((t for t in _revision_topics(item, st.get("response", {}).get("detail", {}), user, db)
+                  if t["id"] == body.topic_id), None)
+    target = topic.get(body.target) if topic else None
+    if not target:
+        raise HTTPException(422, "This review topic is not available for this question")
+    _get_activity(target["activity_id"], user, db)
+    revision = att.payload.get("revision", 0) + 1
+    event = {"action": "review_topic_requested", "item_id": item.id, "topic_id": topic["id"],
+             "target": body.target, "activity_id": target["activity_id"], "page_id": target["page_id"],
+             "tries_before": st["tries"], "revision": revision, "request_id": body.request_id,
+             "assessment_version": att.payload["version"]}
+    record_assistance(att, item, "review_topic", body.request_id, topic_id=topic["id"],
+                      target=body.target, activity_id=target["activity_id"], page_id=target["page_id"])
+    att.payload = {
+        **att.payload, "review_support": [*att.payload.get("review_support", []), event],
+        "review_support_from_revision": att.payload.get("review_support_from_revision", revision),
+    }
+    return _commit_operation(att, body, "review-topic", {"destination": target}, db)
+
+
+class StudyIn(OperationIn):
+    request_id: str = Field(min_length=1, max_length=64)
+    revision: int = Field(ge=0)
+    item_id: str
+    activity_id: str
+
+
+@router.post("/attempts/{aid}/study")
+def study(aid: int, body: StudyIn, user: Annotated[User, Depends(get_current_user)],
+          db: Annotated[Session, Depends(get_db)]) -> dict[str, Any]:
+    _lock_learner(user, db)
+    att, activity = _owned_attempt(aid, user, db)
+    if cached := _replay(att, body, "study"):
+        return cached
+    assessment = attempt_content(att, activity)[0]
+    current = att.payload.get("draft", {}).get("current_item", assessment.items[0].id)
+    item = next((i for i in assessment.items if i.id == body.item_id), None)
+    if item is None or current != item.id:
+        raise HTTPException(422, "Record study for the current question")
+    _, target = _get_activity(body.activity_id, user, db)
+    if target.kind == "quiz":
+        raise HTTPException(422, "Choose a lesson or practice activity")
+    record_assistance(att, item, "study_activity", body.request_id, scope="attempt", activity_id=target.id)
+    return _commit_operation(att, body, "study", {}, db)
 
 
 @router.post("/attempts/{aid}/check")
@@ -410,7 +601,10 @@ def check_item(aid: int, body: CheckIn, user: User = Depends(get_current_user),
         st["revealed"] = True
         grade = None
     else:
-        grade = grade_item(item, body.answer)
+        if not readable_answer(item, body.answer):
+            raise HTTPException(422, "Answer format does not match this question")
+        grade = grade_item(item, body.answer, attempt_content(att, activity)[1])
+        record_response(att, item, body.answer, grade, body.request_id, "formative")
         st["tries"] += 1
         st["correct"] = grade.correct
         st["last_score"] = grade.score
@@ -428,12 +622,15 @@ def check_item(aid: int, body: CheckIn, user: User = Depends(get_current_user),
         "score": grade.score if grade else 0.0, "feedback": grade.feedback if grade else "Here's the worked answer.",
         "detail": grade.detail if grade else {}, "tier": tier, "can_reveal": not st["correct"] and st["tries"] >= 3,
         "worth": 0.0 if body.reveal else _credit_if_correct(st["tries"] if correct else st["tries"] + 1, st["hints"]),
+        "review_topics": _revision_topics(item, grade.detail if grade else st.get("response", {}).get("detail", {}), user, db),
     }
     if tier >= 1 and not body.reveal:
         resp |= hint_content(item, min(tier, MAX_HINT_LEVEL))
+        record_assistance(att, item, "corrective_feedback", body.request_id, level=min(tier, MAX_HINT_LEVEL))
     if correct or body.reveal:
         resp["explanation"] = item.explanation
-        resp["answer"] = expected_answer(item)
+        resp["answer"] = expected_answer(item, attempt_content(att, activity)[1])
+        record_assistance(att, item, "reveal" if body.reveal else "worked_explanation", body.request_id)
     st.update(response=resp, last="check")
     _save_item(att, item, st, db)
     return _commit_operation(att, body, "check", resp, db)
@@ -446,7 +643,7 @@ def finish_attempt(aid: int, body: FinishIn, user: User = Depends(get_current_us
     att, activity = _owned_attempt(aid, user, db)
     if cached := _replay(att, body, "finish"):
         return cached
-    assessment = ASSESSMENTS[activity.config["assessment"]]
+    assessment, graphs, _ = attempt_content(att, activity)
     per_objective: dict[int, list[float]] = {}
     review: list[dict[str, Any]] = []
 
@@ -469,12 +666,22 @@ def finish_attempt(aid: int, body: FinishIn, user: User = Depends(get_current_us
         result: dict[str, Any] = {"score": round(score, 3), "items": state, "review": review}
     else:
         answers = body.answers if body.answers is not None else att.payload.get("draft", {}).get("answers", {})
+        if not answers.keys() <= {i.id for i in assessment.items}:
+            raise HTTPException(422, "Unknown question in submission")
+        if any(has_answer(answers.get(i.id)) and not readable_answer(i, answers[i.id]) for i in assessment.items):
+            raise HTTPException(422, "Answer format does not match this question")
+        mark_unanswered(att, assessment.items, answers)
         for item in assessment.items:
-            g = grade_item(item, answers.get(item.id))
+            g = grade_item(item, answers.get(item.id), graphs)
+            if has_answer(answers.get(item.id)):
+                record_response(att, item, answers[item.id], g, body.request_id, "summative")
             per_objective.setdefault(item.objective, []).append(g.score)
             review.append({"item_id": item.id, "objective": item.objective, "score": g.score, "correct": g.correct,
                            "feedback": g.feedback, "detail": g.detail, "explanation": item.explanation,
-                           "answer": expected_answer(item), "your_answer": answers.get(item.id)})
+                           "answer": expected_answer(item, graphs), "your_answer": answers.get(item.id)})
+        # All final responses are captured before any whole-trial feedback is disclosed.
+        for item in assessment.items:
+            record_assistance(att, item, "final_feedback", body.request_id)
         score = sum(r["score"] for r in review) / len(review)
         completed = score >= assessment.pass_mark
         stars = stars_for_score(score, assessment.pass_mark) if completed else 0
@@ -482,15 +689,17 @@ def finish_attempt(aid: int, body: FinishIn, user: User = Depends(get_current_us
 
     objective_scores = {o: sum(v) / len(v) for o, v in per_objective.items()}
     result["objectives"] = {str(o): round(s, 3) for o, s in objective_scores.items()}
+    result["evidence_summary"] = evidence_report(att, assessment.items)["summary"]
     reward = record_result(db, user, activity, kind="quiz", completed=completed, score=round(score, 3), stars=stars,
                            payload=att.payload | {"answers": body.answers if body.answers is not None
                                                   else att.payload.get("draft", {}).get("answers", {})}, result=result,
                            objective_scores=objective_scores, attempt=att, commit=False)
     mastery = mastery_map(db, user)
+    states = module_states(progress_map(db, user))
     response = {
-        "result": result,
+        "result": _review_result(result, states),
         "reward": reward,
         "mastery": mastery_report(mastery),
-        "recommendations": recommendations(module_states(progress_map(db, user)), mastery),
+        "recommendations": recommendations(states, mastery),
     }
     return _commit_operation(att, body, "finish", response, db)

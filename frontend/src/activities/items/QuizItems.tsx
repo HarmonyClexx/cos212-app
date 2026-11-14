@@ -1,5 +1,5 @@
 import { useState, type DragEvent } from 'react'
-import type { Answer, GradeDetail, QuizItem } from '../../api/types'
+import type { Answer, GradeDetail, QuizItem, ReviewDestination, ReviewTarget, ReviewTopic } from '../../api/types'
 import { GraphCanvas, type EdgeMark, type NodeMark } from '../../components/GraphCanvas'
 import { Icon } from '../../components/Icon'
 import { Md } from '../../components/bits'
@@ -66,6 +66,77 @@ export function ItemView(props: ItemProps<Answer>) {
         </label>
       )}
     </div>
+  )
+}
+
+export function GradeExplanation({ detail, label }: { detail?: GradeDetail; label: string }) {
+  if (!detail?.explanation) return null
+  return (
+    <section className="small" aria-label={label} style={{ marginTop: 10 }}>
+      <p><b>{label}</b></p>
+      {detail.row_feedback && (
+        <ul style={{ margin: '6px 0', paddingLeft: 18 }}>
+          {Object.entries(detail.row_feedback).map(([row, r]) => (
+            <li key={row}>
+              <b>Row {row}:</b> {r.missing_count} missing neighbour{r.missing_count === 1 ? '' : 's'};
+              {' '}{r.extra.length} extra entr{r.extra.length === 1 ? 'y' : 'ies'}{r.extra.length > 0 ? ` (${r.extra.join(', ')})` : ''}.
+              {r.reverse_missing_count > 0 && <> {r.reverse_missing_count} matching reverse entr{r.reverse_missing_count === 1 ? 'y is' : 'ies are'} missing.</>}
+              {r.incoming_only.length > 0 && <> Incoming-only entries: {r.incoming_only.join(', ')}.</>}
+            </li>
+          ))}
+        </ul>
+      )}
+      <p>{detail.explanation}</p>
+    </section>
+  )
+}
+
+export function reviewHref(destination: ReviewDestination, returnQuiz: string) {
+  const query = new URLSearchParams({ returnQuiz })
+  if (destination.page_id) query.set('page', destination.page_id)
+  return `/learn/${encodeURIComponent(destination.module)}/${encodeURIComponent(destination.activity_id)}?${query}`
+}
+
+export function RevisionLinks({ topics = [], onOpen, disabled, retry, active = false }: {
+  topics?: ReviewTopic[]
+  onOpen: (topic: ReviewTopic, target: ReviewTarget) => void
+  disabled?: (topic: ReviewTopic, target: ReviewTarget) => boolean
+  retry?: { topic_id: string; target: ReviewTarget }
+  active?: boolean
+}) {
+  if (!topics.length) return null
+  return (
+    <section className="stack-v small" aria-label="Targeted revision" style={{ marginTop: 14 }}>
+      {topics.map((topic) => (
+        <div key={topic.id}>
+          <p><b>{topic.title}</b>{!topic.specific && <span className="faint"> · general review</span>}</p>
+          <div className="row wrap" style={{ marginTop: 6 }}>
+            {(['lesson', 'practice', 'fallback'] as const).map((target) => {
+              const destination = topic[target]
+              if (!destination) return null
+              const again = retry?.topic_id === topic.id && retry.target === target
+              const label = target === 'lesson' ? 'Read' : target === 'practice' ? 'Practise' : 'Start an available lesson'
+              return (
+                <button key={target} className="btn sm"
+                  style={{ height: 'auto', minHeight: 32, padding: '6px 12px', whiteSpace: 'normal', textAlign: 'left', maxWidth: '100%' }}
+                  disabled={!destination.unlocked || disabled?.(topic, target)}
+                  title={!destination.unlocked ? 'Complete the earlier activities first' : undefined}
+                  onClick={() => onOpen(topic, target)}>
+                  <Icon name={target === 'practice' ? 'map' : 'book'} size={14} />
+                  <span>{again ? 'Retry' : label}: {destination.title}{!destination.unlocked && ' (locked)'}</span>
+                </button>
+              )
+            })}
+          </div>
+          {topic.lesson && !topic.lesson.unlocked && <p className="faint" style={{ marginTop: 6 }}>
+            This lesson is not yet available. Start an available lesson to reach it without skipping checks.
+          </p>}
+        </div>
+      ))}
+      {active && <p className="faint">
+        Opening a review link is recorded as support, without changing this question's score.
+      </p>}
+    </section>
   )
 }
 

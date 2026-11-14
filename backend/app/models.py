@@ -1,8 +1,9 @@
 """Persistence model.
 
 Course *content* (graphs, modules, quiz items) lives in code under app/content so it is
-versioned with the app. The database stores only learner state: accounts, progress,
-attempt logs, per-objective mastery and earned badges.
+versioned with the app. Quiz attempts also retain private content snapshots so
+later catalogue changes do not replace their tasks. Other stored learner state
+includes accounts, progress, response/support logs, objective scores and badges.
 """
 
 from datetime import date, datetime

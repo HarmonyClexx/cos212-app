@@ -4,18 +4,42 @@ interface Bit {
   x: number; y: number; vx: number; vy: number; r: number; vr: number; w: number; h: number; color: string
 }
 
-export function confetti(intensity = 1) {
-  if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return
+let activeBurst: (() => void) | null = null
+
+export function stopConfetti() {
+  activeBurst?.()
+}
+
+export function confetti(intensity = 1, container: HTMLElement = document.body, duration = 2800) {
+  stopConfetti()
+  const motion = window.matchMedia?.('(prefers-reduced-motion: reduce)')
+  if (motion?.matches) return
   const css = getComputedStyle(document.documentElement)
   const colors = ['--thread', '--chalk', '--brand', '--hint', '--danger'].map((v) => css.getPropertyValue(v).trim() || '#f5b941')
   const canvas = document.createElement('canvas')
+  canvas.setAttribute('aria-hidden', 'true')
+  canvas.className = 'confetti'
   const dpr = Math.min(window.devicePixelRatio || 1, 2)
   canvas.width = innerWidth * dpr
   canvas.height = innerHeight * dpr
   Object.assign(canvas.style, { position: 'fixed', inset: '0', width: '100vw', height: '100vh', pointerEvents: 'none', zIndex: '70' })
-  document.body.appendChild(canvas)
-  const ctx = canvas.getContext('2d')!
+  if (duration < 2800) canvas.style.opacity = '0.65'
+  container.appendChild(canvas)
+  let ctx: CanvasRenderingContext2D | null
+  try { ctx = canvas.getContext('2d') } catch { canvas.remove(); return }
+  if (!ctx) { canvas.remove(); return }
   ctx.scale(dpr, dpr)
+  let raf = 0
+  const cleanup = () => {
+    cancelAnimationFrame(raf)
+    canvas.remove()
+    window.removeEventListener('resize', cleanup)
+    motion?.removeEventListener?.('change', cleanup)
+    if (activeBurst === cleanup) activeBurst = null
+  }
+  activeBurst = cleanup
+  window.addEventListener('resize', cleanup)
+  motion?.addEventListener?.('change', cleanup)
 
   const bits: Bit[] = []
   const n = Math.round(150 * intensity)
@@ -44,15 +68,16 @@ export function confetti(intensity = 1) {
       b.y += b.vy
       b.r += b.vr
       ctx.save()
-      ctx.globalAlpha = Math.max(0, 1 - elapsed / 2800)
+      ctx.globalAlpha = Math.max(0, 1 - elapsed / duration)
       ctx.translate(b.x, b.y)
       ctx.rotate(b.r)
       ctx.fillStyle = b.color
       ctx.fillRect(-b.w / 2, -b.h / 2, b.w, b.h)
       ctx.restore()
     }
-    if (elapsed < 2800) requestAnimationFrame(frame)
-    else canvas.remove()
+    if (elapsed < duration) raf = requestAnimationFrame(frame)
+    else cleanup()
   }
-  requestAnimationFrame(frame)
+  raf = requestAnimationFrame(frame)
+  return cleanup
 }

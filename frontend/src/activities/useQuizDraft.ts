@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useQueryClient } from '@tanstack/react-query'
 import { api, ApiError, tokenStore } from '../api/client'
-import type { Answer, AttemptStart } from '../api/types'
+import type { Answer, AttemptStart, ModuleSummary } from '../api/types'
 import { emptyAnswer } from './items/QuizItems'
 
 interface Draft {
@@ -19,12 +20,18 @@ interface Backup extends Draft {
 }
 
 let activeSave: (() => Promise<void>) | null = null
+let activeStudy: ((href: string, activityId: string) => Promise<boolean>) | null = null
 export async function flushQuizDraft() {
   await activeSave?.()
 }
 
+export async function followQuizStudy(href: string, activityId: string) {
+  return await activeStudy?.(href, activityId) ?? false
+}
+
 export function useQuizDraft(attempt: AttemptStart) {
   const navigate = useNavigate()
+  const qc = useQueryClient()
   const key = `ariadne.quiz-draft:${attempt.user_id}:${attempt.attempt_id}`
   const [initial] = useState(() => {
     const saved: Draft = {
@@ -59,6 +66,38 @@ export function useQuizDraft(attempt: AttemptStart) {
   const [conflict, setConflict] = useState(false)
   const [busy, setBusy] = useState(false)
   const [uncertain, setUncertain] = useState(false)
+  const [studyPending, setStudyPending] = useState(false)
+  const studyNavigation = useRef<{ href: string; body: Record<string, unknown> } | null>(null)
+  const studyInFlight = useRef(false)
+  const finished = useRef(false)
+  const action = useRef<((path: string, body: Record<string, unknown>) => Promise<{ revision: number }>) | null>(null)
+
+  const retryStudy = useCallback(async () => {
+    const destination = studyNavigation.current
+    if (!destination || !action.current || studyInFlight.current) return
+    studyInFlight.current = true
+    try {
+      await action.current('study', destination.body)
+      studyNavigation.current = null
+      setStudyPending(false)
+      void qc.invalidateQueries({ queryKey: ['me'] })
+      navigate(destination.href)
+    } finally { studyInFlight.current = false }
+  }, [navigate, qc])
+
+  const followStudy = useCallback(async (href: string, activityId: string) => {
+    if (finished.current) return false
+    if (blocked.current || (failedAction.current && failedAction.current.path !== 'study') ||
+      (studyNavigation.current && studyNavigation.current.href !== href)) {
+      throw new Error('Resolve the pending quiz action first.')
+    }
+    studyNavigation.current ??= {
+      href, body: { item_id: current.current.current_item, activity_id: activityId },
+    }
+    setStudyPending(true)
+    await retryStudy()
+    return true
+  }, [retryStudy])
 
   const backup = useCallback(() => {
     try {
@@ -122,6 +161,7 @@ export function useQuizDraft(attempt: AttemptStart) {
 
   useEffect(() => {
     activeSave = flush
+    activeStudy = followStudy
     const beforeUnload = (e: BeforeUnloadEvent) => {
       if (dirty.current || pending.current || failedAction.current) e.preventDefault()
     }
@@ -129,9 +169,19 @@ export function useQuizDraft(attempt: AttemptStart) {
       const link = (e.target as Element).closest?.('a')
       if (!link || link.target || link.origin !== location.origin ||
         e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return
-      if (!dirty.current && !pending.current && !failedAction.current && !blocked.current) return
+      const route = link.pathname.match(/^\/learn\/([^/]+)\/([^/]+)\/?$/)
+      const modules = qc.getQueryData<ModuleSummary[]>(['modules'])
+      const target = !finished.current && route
+        ? modules?.find((m) => m.slug === route[1])?.activities.find((a) => a.id === route[2] && a.kind !== 'quiz')
+        : undefined
+      if (!target && !dirty.current && !pending.current && !failedAction.current && !blocked.current) return
       e.preventDefault()
       e.stopPropagation()
+      if (target && !blocked.current && (!failedAction.current || failedAction.current.path === 'study')) {
+        const href = link.pathname + link.search + link.hash
+        void followStudy(href, target.id).catch(() => {})
+        return
+      }
       void flush().then(() => navigate(link.pathname + link.search + link.hash)).catch(() => {})
     }
     window.addEventListener('beforeunload', beforeUnload)
@@ -140,9 +190,10 @@ export function useQuizDraft(attempt: AttemptStart) {
       window.removeEventListener('beforeunload', beforeUnload)
       document.removeEventListener('click', followLink, true)
       if (activeSave === flush) activeSave = null
+      if (activeStudy === followStudy) activeStudy = null
       if (tokenStore.get()) void flush().catch(() => {})
     }
-  }, [flush, navigate])
+  }, [flush, followStudy, navigate, qc])
 
   const perform = async <T extends { revision: number }>(path: string, body: Record<string, unknown>): Promise<T> => {
     setBusy(true)
@@ -158,6 +209,11 @@ export function useQuizDraft(attempt: AttemptStart) {
       setUncertain(false)
       setError('')
       setStatus('saved')
+      if (path === 'finish') finished.current = true
+      if (path !== 'study') {
+        studyNavigation.current = null
+        setStudyPending(false)
+      }
       return response
     } catch (e) {
       if (e instanceof ApiError && e.status < 500) failedAction.current = null
@@ -166,13 +222,15 @@ export function useQuizDraft(attempt: AttemptStart) {
       throw e
     } finally { setBusy(false) }
   }
+  action.current = perform
 
   return {
     ...draft, idx: Math.max(0, attempt.items.findIndex((i) => i.id === draft.current_item)),
     setIdx: (i: number) => update({ current_item: attempt.items[i].id }),
     setAnswer: (id: string, value: Answer) => update({ answers: { ...current.current.answers, [id]: value } }),
     setReflection: (id: string, text: string) => update({ reflections: { ...current.current.reflections, [id]: text } }),
-    status, error, conflict, busy, uncertain, flush, perform,
+    status, error, conflict, busy, uncertain, flush, perform, studyPending, retryStudy,
+    pendingAction: failedAction.current?.path,
   }
 }
 

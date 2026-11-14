@@ -27,6 +27,11 @@ class Criterion(BaseModel):
     nudge: str = ""  # question shown while the criterion is unmet: points at the gap, never the wording
 
 
+class OptionFeedback(BaseModel):
+    concept: str
+    explanation: str
+
+
 class Item(BaseModel):
     id: str
     type: ItemType
@@ -34,6 +39,7 @@ class Item(BaseModel):
     prompt: str
     graph: str | None = None
     options: list[str] | None = None
+    option_feedback: dict[int, OptionFeedback] = Field(default_factory=dict)
     multi: bool = False
     select: Literal["nodes", "edges"] | None = None
     algorithm: Literal["dfs", "bfs"] | None = None

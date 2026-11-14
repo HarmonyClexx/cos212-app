@@ -9,6 +9,7 @@ from app.core.security import get_current_user
 from app.models import User, UserBadge
 from app.services.gamification import BADGES, level_info
 from app.services.progress import mastery_map, mastery_report, module_states, progress_map, recommendations
+from app.services.quiz_evidence import learner_evidence
 
 router = APIRouter(tags=["learner"])
 
@@ -28,6 +29,7 @@ def me(user: User = Depends(get_current_user), db: Session = Depends(get_db)) ->
         "badges": [{**b.__dict__, "earned_at": earned.get(b.id)} for b in BADGES],
         "mastery": mastery_report(mastery),
         "recommendations": recommendations(states, mastery),
+        "quiz_evidence": learner_evidence(db, user),
         "stats": {
             "completed": sum(a["completed"] for a in activities),
             "total": len(activities),

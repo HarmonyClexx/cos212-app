@@ -5,13 +5,28 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.content.course import MODULES, MODULES_BY_SLUG, OBJECTIVES, OBJECTIVES_BY_ID
+from app.content.course import ACTIVITIES, MODULES, MODULES_BY_SLUG, OBJECTIVES, OBJECTIVES_BY_ID
+from app.content.lessons import LESSONS
 from app.core.config import settings
 from app.models import ActivityProgress, Mastery, User
 
 MASTERY_TARGET = 0.7
 # Below this, practising again isn't enough: the learner is sent back to the lesson first.
 RELEARN_BELOW = 0.4
+REVISION_PAGES = {
+    "adjacency-list": ("list", "Adjacency lists and both endpoint rows"),
+    "matrix": ("matrix", "Rows, columns and one-way arrows"),
+    "storage": ("choose", "Choosing a representation"),
+}
+CONCEPT_TOPICS = {
+    "neighbour-omitted": "adjacency-list",
+    "non-neighbour-included": "adjacency-list",
+    "undirected-edge-one-way": "adjacency-list",
+    "direction-ignored": "matrix",
+    "undirected-matrix-symmetry": "matrix",
+    "matrix-column-interpretation": "matrix",
+    "representation-storage": "storage",
+}
 
 
 def progress_map(db: Session, user: User) -> dict[str, ActivityProgress]:
@@ -75,7 +90,7 @@ def recommendations(states: list[dict[str, Any]], mastery: dict[int, Mastery]) -
         module = next(m for m in states if m["slug"] == obj.module)
         practice = [a for a in module["activities"] if a["kind"] in ("trace", "quiz") and a["completed"]]
         target = min(practice, key=lambda a: a["best_stars"]) if practice else module["activities"][0]
-        home, advice = module, f"aim for {round(MASTERY_TARGET * 100)}%"
+        home, advice = module, f"aim for the {round(MASTERY_TARGET * 100)}% practice target"
         lesson = MODULES_BY_SLUG[obj.module].lesson
         if row.value < RELEARN_BELOW and lesson in by_id and by_id[lesson][1]["unlocked"]:
             # Struggling badly: re-read the explanation before practising again.
@@ -84,9 +99,42 @@ def recommendations(states: list[dict[str, Any]], mastery: dict[int, Mastery]) -
         recs.append({
             "type": "revise", "module": home["slug"], "activity_id": target["id"], "title": target["title"],
             "objective": row.objective,
-            "reason": f"Mastery of “{obj.title}” is {round(row.value * 100)}% – {advice}",
+            "reason": f"Running practice score for “{obj.title}” is {round(row.value * 100)}% – {advice}",
         })
     return recs
+
+
+def revision_topics(objective: int | None, concepts: list[str] | None,
+                    states: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    obj = OBJECTIVES_BY_ID.get(objective)
+    if not obj:
+        return []
+    module = MODULES_BY_SLUG[obj.module]
+    by_id = {a["id"]: (m, a) for m in states for a in m["activities"]}
+
+    def destination(activity_id: str, page_id: str | None = None) -> dict[str, Any]:
+        home, activity = ACTIVITIES[activity_id]
+        state = by_id.get(activity_id)
+        title = activity.title
+        if page_id:
+            lesson = LESSONS[activity.config["lesson"]]
+            title = next(p.title for p in lesson.pages if p.id == page_id)
+        return {"module": home.slug, "activity_id": activity_id, "page_id": page_id, "title": title,
+                "unlocked": bool(state and state[0]["unlocked"] and state[1]["unlocked"])}
+
+    topics = list(dict.fromkeys(CONCEPT_TOPICS[c] for c in concepts or [] if c in CONCEPT_TOPICS)) if objective == 2 else []
+    topics = topics or [f"objective-{objective}"]
+    practice = next(a for a in module.activities if a.kind != "quiz")
+    available_lesson = next((a["id"] for m in states if m["track"] == "course"
+                             for a in m["activities"] if a["unlocked"] and a["kind"] == "lesson"), None)
+    out = []
+    for topic in topics:
+        page_id, title = REVISION_PAGES.get(topic, (None, f"Review {obj.title}"))
+        lesson = destination(module.lesson, page_id) if module.lesson else None
+        fallback = destination(available_lesson) if lesson and not lesson["unlocked"] and available_lesson else None
+        out.append({"id": topic, "title": title, "specific": topic in REVISION_PAGES,
+                    "lesson": lesson, "practice": destination(practice.id), "fallback": fallback})
+    return out
 
 
 def mastery_report(mastery: dict[int, Mastery]) -> list[dict[str, Any]]:

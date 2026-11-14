@@ -86,6 +86,8 @@ export function GraphCanvas({
   }, [thread])
 
   const edgeList = graph.edges.map(([u, v]) => ({ u, v, id: edgeId(graph, u, v) }))
+  const endpointLabel = (id: string) =>
+    hiddenNodes?.has(id) || nodeMarks[id]?.includes('fog') ? 'an unexplored room' : labels[id] ?? id
 
   const markerFor = (marks: (EdgeMark | false | undefined)[]) => {
     if (marks.includes('wrong')) return 'danger'
@@ -108,7 +110,7 @@ export function GraphCanvas({
       viewBox={`${box.minX} ${box.minY} ${box.w} ${box.h}`}
       style={{ maxHeight }}
       role="group"
-      aria-label={ariaLabel ?? `${graph.directed ? 'Directed' : 'Undirected'} graph with ${graph.nodes.length} vertices`}
+      aria-label={ariaLabel ?? `${graph.directed ? 'Directed' : 'Undirected'} graph with ${graph.nodes.filter((n) => !hiddenNodes?.has(n.id)).length} visible vertices`}
     >
       <defs>
         {['default', 'brand', 'chalk', 'danger', 'hint'].map((m) => (
@@ -134,9 +136,11 @@ export function GraphCanvas({
               onClick={clickable ? () => onEdgeClick(id) : undefined}
               onMouseEnter={onEdgeHover ? () => onEdgeHover(id) : undefined}
               onMouseLeave={onEdgeHover ? () => onEdgeHover(null) : undefined}
-              role={clickable ? 'button' : undefined}
+              role={clickable ? 'button' : 'img'}
               tabIndex={clickable ? 0 : undefined}
-              aria-label={clickable ? `Edge ${graph.directed ? `${u} to ${v}` : `${u}–${v}`}` : undefined}
+              aria-label={`Edge ${graph.directed
+                ? `${endpointLabel(u)} to ${endpointLabel(v)}, one way`
+                : `${endpointLabel(u)}–${endpointLabel(v)}, both ways`}`}
               aria-pressed={clickable ? marks.includes('selected') : undefined}
               onKeyDown={clickable ? keyActivate(() => onEdgeClick(id)) : undefined}
             >

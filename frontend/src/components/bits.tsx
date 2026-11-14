@@ -31,10 +31,10 @@ export function Meter({ value, color = 'var(--brand)', target, size = '', label 
 }
 
 export function masteryStatus(value: number, evidence: number) {
-  if (evidence === 0) return { label: 'Not started', icon: 'minus', color: 'var(--ink-3)' }
-  if (value >= 0.7) return { label: 'Mastered', icon: 'check', color: 'var(--chalk)' }
-  if (value >= 0.4) return { label: 'Developing', icon: 'trend', color: 'var(--status-dev)' }
-  return { label: 'Needs revision', icon: 'undo', color: 'var(--danger)' }
+  if (evidence === 0) return { label: 'No scores yet', icon: 'minus', color: 'var(--ink-3)' }
+  if (value >= 0.7) return { label: 'Target reached', icon: 'check', color: 'var(--chalk)' }
+  if (value >= 0.4) return { label: 'Below target', icon: 'trend', color: 'var(--status-dev)' }
+  return { label: 'Revision suggested', icon: 'undo', color: 'var(--danger)' }
 }
 
 export function FeedbackBox({ fb, children }: { fb: Feedback | null; children?: ReactNode }) {

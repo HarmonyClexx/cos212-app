@@ -6,12 +6,13 @@
 // tries again; the next page opens once the check is right. A recap closes the lesson.
 
 import { useEffect, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useMe, useModules, useSubmitActivity } from '../api/hooks'
 import type { LessonCheck } from '../api/types'
 import { Icon } from '../components/Icon'
 import { Inline, Prose } from '../components/Prose'
 import { FeedbackBox } from '../components/bits'
+import { useAnswerFeedback } from '../lib/answerFeedback'
 import { LessonFigureView } from './lesson/LessonFigures'
 import type { ActivityProps } from './shared'
 
@@ -40,10 +41,11 @@ function save(userId: number, id: string, s: Saved | null) {
   } catch { /* storage unavailable: fine */ }
 }
 
-function Check({ check, picked, tries, onPick }: {
+function Check({ check, picked, tries, praised, onPick }: {
   check: LessonCheck
   picked: number | undefined
   tries: number
+  praised: boolean
   onPick: (i: number) => void
 }) {
   const solved = picked === check.answer
@@ -64,7 +66,7 @@ function Check({ check, picked, tries, onPick }: {
       </div>
       {picked !== undefined && (
         <FeedbackBox fb={solved
-          ? { tone: 'good', tier: 0, title: tries === 1 ? 'Spot on.' : 'That’s it.' }
+          ? { tone: 'good', tier: 0, title: praised ? 'Well done!' : tries === 1 ? 'Spot on.' : 'That’s it.' }
           : { tone: 'warn', tier: 0, title: 'Not quite. Try another answer.' }}>
           <div className="b"><Inline text={check.why[picked]} /></div>
         </FeedbackBox>
@@ -91,6 +93,7 @@ function LearnerLesson({ activity, onReward, userId }: ActivityProps & { userId:
   const done = activity.state.completed
   const { data: modules } = useModules()
   const navigate = useNavigate()
+  const [query, setQuery] = useSearchParams()
   const submit = useSubmitActivity(activity.id)
   const top = useRef<HTMLDivElement>(null)
   const first = useRef(true)
@@ -101,17 +104,32 @@ function LearnerLesson({ activity, onReward, userId }: ActivityProps & { userId:
   const [tries, setTries] = useState<Record<string, number>>(saved?.tries ?? {})
 
   useEffect(() => save(userId, activity.id, { page, picked, tries }), [userId, activity.id, page, picked, tries])
-  useEffect(() => {
-    if (first.current) { first.current = false; return }
-    top.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-  }, [page])
-
   const solved = (c: LessonCheck | null) => !c || picked[c.id] === c.answer
   // How far the learner may go: up to and including the first page with an unanswered check.
   const firstOpen = lesson.pages.findIndex((p) => !solved(p.check))
   const reachable = done || firstOpen === -1 ? lesson.pages.length : firstOpen
-  const onSummary = page === lesson.pages.length
-  const p = lesson.pages[page]
+  const requested = query.get('page')
+  const reviewing = requested !== null
+  const target = lesson.pages.findIndex((p) => p.id === requested)
+  const available = reviewing && target >= 0 && target <= reachable
+  // A section review is transient: the saved lesson position remains unchanged.
+  const shownPage = available ? target : Math.min(page, reachable)
+  const onSummary = shownPage === lesson.pages.length
+  const p = lesson.pages[shownPage]
+  const { announce: answerFeedback, praised } = useAnswerFeedback(`${userId}:${activity.id}:${shownPage}`)
+  const clearReview = () => {
+    const next = new URLSearchParams(query)
+    next.delete('page')
+    setQuery(next, { replace: true })
+  }
+  const goTo = (next: number) => {
+    setPage(next)
+    if (reviewing) clearReview()
+  }
+  useEffect(() => {
+    if (first.current) { first.current = false; return }
+    top.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }, [shownPage])
 
   const intro = modules?.find((m) => m.track === 'course')
   const index = intro?.activities.findIndex((a) => a.id === activity.id) ?? -1
@@ -122,6 +140,7 @@ function LearnerLesson({ activity, onReward, userId }: ActivityProps & { userId:
     if (picked[c.id] === c.answer) return
     setPicked((x) => ({ ...x, [c.id]: i }))
     setTries((x) => ({ ...x, [c.id]: (x[c.id] ?? 0) + 1 }))
+    answerFeedback(`${c.id}:${(tries[c.id] ?? 0) + 1}`, i === c.answer)
   }
 
   const finish = () => submit.mutate(
@@ -147,18 +166,34 @@ function LearnerLesson({ activity, onReward, userId }: ActivityProps & { userId:
         <span className="faint small">about {lesson.minutes} min</span>
         <nav className="lesson-dots" aria-label="Lesson pages">
           {[...lesson.pages.map((_, i) => i), lesson.pages.length].map((i) => (
-            <button key={i} className={`ldot ${i === page ? 'current' : ''} ${i < page || (done && i !== page) ? 'seen' : ''}`}
-              disabled={i > reachable} onClick={() => setPage(i)}
-              aria-label={`Page ${i + 1}: ${pageLabel(i)}`} aria-current={i === page ? 'step' : undefined} title={pageLabel(i)} />
+            <button key={i} className={`ldot ${i === shownPage ? 'current' : ''} ${i < shownPage || (done && i !== shownPage) ? 'seen' : ''}`}
+              disabled={i > reachable} onClick={() => goTo(i)}
+              aria-label={`Page ${i + 1}: ${pageLabel(i)}`} aria-current={i === shownPage ? 'step' : undefined} title={pageLabel(i)} />
           ))}
         </nav>
       </div>
+
+      {reviewing && (
+        <section className="card small" aria-label="Lesson section review" style={{ marginBottom: 16 }}>
+          <p>{available
+            ? `Reviewing: ${lesson.pages[target].title}. Your saved lesson position is unchanged.`
+            : target < 0
+              ? 'This lesson section does not exist. Continue from your saved reachable page.'
+              : 'This topic is on a later page. Complete the earlier quick checks first; no pages have been unlocked.'}</p>
+          {available && page > reachable && <p style={{ marginTop: 6 }}>
+            Your saved page is after an unanswered quick check. Complete that check before resuming it.
+          </p>}
+          <button className="btn sm" style={{ marginTop: 10 }} onClick={() => available ? clearReview() : goTo(shownPage)}>
+            {available ? 'Resume saved page' : 'Continue lesson'}
+          </button>
+        </section>
+      )}
 
       {!onSummary && p && (
         <>
           <div className={`lesson-grid ${p.figure ? '' : 'solo'}`}>
             <article className="card lesson-text">
-              <div className="eyebrow">Page {page + 1} of {lesson.pages.length}</div>
+              <div className="eyebrow">Page {shownPage + 1} of {lesson.pages.length}</div>
               <h2>{p.title}</h2>
               <Prose text={p.body} />
               {p.code && <pre className="lesson-code" aria-label="Pseudocode"><code>{p.code}</code></pre>}
@@ -166,7 +201,7 @@ function LearnerLesson({ activity, onReward, userId }: ActivityProps & { userId:
             {p.figure && <div className="card flat lesson-figure"><LessonFigureView fig={p.figure} /></div>}
           </div>
           {p.check && (
-            <Check key={p.check.id} check={p.check} picked={picked[p.check.id]} tries={tries[p.check.id] ?? 0}
+            <Check key={p.check.id} check={p.check} picked={picked[p.check.id]} tries={tries[p.check.id] ?? 0} praised={praised}
               onPick={(i) => pick(p.check!, i)} />
           )}
         </>
@@ -188,14 +223,14 @@ function LearnerLesson({ activity, onReward, userId }: ActivityProps & { userId:
       )}
 
       <div className="lesson-nav">
-        <button className="btn" onClick={() => setPage((x) => Math.max(0, x - 1))} disabled={page === 0}>
+        <button className="btn" onClick={() => goTo(Math.max(0, shownPage - 1))} disabled={shownPage === 0}>
           <Icon name="chevronLeft" /> Back
         </button>
         <span className="spacer" />
         {!onSummary && (
-          <button className={`btn ${solved(p?.check ?? null) ? 'primary' : ''}`} onClick={() => setPage((x) => x + 1)}
-            disabled={page >= reachable} title={page >= reachable ? 'Answer the quick check first' : undefined}>
-            {page === lesson.pages.length - 1 ? 'Summary' : 'Next'} <Icon name="chevronRight" />
+          <button className={`btn ${solved(p?.check ?? null) ? 'primary' : ''}`} onClick={() => goTo(shownPage + 1)}
+            disabled={shownPage >= reachable} title={shownPage >= reachable ? 'Answer the quick check first' : undefined}>
+            {shownPage === lesson.pages.length - 1 ? 'Summary' : 'Next'} <Icon name="chevronRight" />
           </button>
         )}
         {onSummary && !done && (

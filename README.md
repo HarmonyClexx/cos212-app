@@ -73,12 +73,20 @@ also have an account/attempt-scoped local fallback. Edits the server never recei
 guaranteed to follow you to another browser.
 If saving fails when signing out, the app warns before letting you sign out anyway.
 
-Opening a completed quiz does not start another attempt. Use **Start another attempt** deliberately;
+Opening a completed quiz does not start another attempt. Formative quizzes offer **Start another attempt**;
 compatible final reports remain available when revisiting the final quiz. Existing completed scores
 are preserved, not regraded. Legacy unfinished attempts without resumable state are retained as
 superseded records; the app explains when it must start a new one.
 
-Quiz-start failures offer **Retry**. Retrying an uncertain save/check/hint/submission reuses its
+The final has two reserved versions, **A** and **B**, each with ten questions (two per objective).
+Check availability before explicitly starting a version. Issuance records exposure even without
+submission; refresh or returning resumes the same assigned version. After both have been issued,
+the app offers topic revision and **Repeat practice**, not a third unused final. Original final
+definitions and results remain available. Reserved graphs are not public teaching fixtures.
+Response records distinguish reserved finals without recorded help, helped finals, legacy fixed
+sets and repeat practice; none establishes validated mastery or absence of outside help.
+
+Quiz-start failures offer **Retry**. Explicit final starts and uncertain save/check/hint/submission retries reuse their
 request ID instead of charging help or awarding rewards twice. If another tab changes the attempt,
 the stale tab must reload the saved state rather than overwrite it.
 

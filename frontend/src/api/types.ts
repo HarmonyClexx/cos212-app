@@ -47,6 +47,7 @@ export interface Me {
   mastery: MasteryRow[]
   recommendations: Recommendation[]
   stats: { completed: number; total: number; stars: number; max_stars: number; attempts: number }
+  quiz_evidence?: QuizEvidenceSummary
 }
 
 export type ActivityKind = 'lesson' | 'maze' | 'inspect' | 'represent' | 'demo' | 'trace' | 'compare' | 'quiz'
@@ -190,6 +191,7 @@ export interface Reward {
 export type ItemType = 'mcq' | 'graph_select' | 'adjacency' | 'order' | 'short_answer'
 
 export interface QuizItem {
+  task_version?: string | null
   id: string
   type: ItemType
   objective: number
@@ -207,7 +209,98 @@ export interface QuizItem {
 
 export type Answer = number[] | string[] | Record<string, string[]> | string
 
+export type ResponseKind = 'first_unassisted_practice' | 'first_assisted_practice' | 'repeat_practice'
+  | 'history_unknown' | 'assisted_retry' | 'repeat_response' | 'final_fixed_set'
+  | 'final_reserved_unassisted' | 'final_reserved_assisted' | 'final_repeat'
+
+export interface FinalAssignment {
+  variant: string
+  purpose: 'reserved' | 'repeat'
+  unused_at_issuance: boolean
+}
+
+export interface FinalAvailability {
+  unused_versions: string[]
+  used_versions: string[]
+  exhausted: boolean
+  has_saved_attempt: boolean
+  has_open_attempt: boolean
+  revision_topics: ReviewTopic[]
+}
+
+export interface AssistanceRecord {
+  action: string
+  scope: 'item' | 'attempt'
+  item_id: string
+  revision: number
+  sequence?: number
+  level?: number
+  source?: string
+}
+
+export interface ResponseRecord {
+  answer: Answer
+  correct: boolean
+  score: number
+  detail: GradeDetail
+  kind: ResponseKind
+  sequence: number
+  bank_version: number
+  task_version: string
+  reflection: string | null
+  assistance_before: AssistanceRecord[]
+  independent_final: boolean
+}
+
+export interface ItemEvidence {
+  item_id: string
+  task_version: string | null
+  first_response: ResponseRecord | null
+  latest_response: ResponseRecord | null
+  response_count: number
+  assistance: AssistanceRecord[]
+  unanswered: boolean
+}
+
+export interface QuizEvidenceSummary {
+  objectives: ({ objective: number } & Record<ResponseKind, { correct: number; total: number }>)[]
+  unrecorded_attempts: number
+  unanswered_final_items: number
+}
+
+export interface QuizEvidence {
+  final_assignment?: FinalAssignment | null
+  schema_version: number | null
+  from_revision: number | null
+  complete_from_start: boolean
+  prior_exposure: 'first_recorded_issuance' | 'repeat' | 'unknown'
+  items: ItemEvidence[]
+  summary: QuizEvidenceSummary
+}
+
+export type ReviewTarget = 'lesson' | 'practice' | 'fallback'
+
+export interface ReviewDestination {
+  module: string
+  activity_id: string
+  page_id: string | null
+  title: string
+  unlocked: boolean
+}
+
+export interface ReviewTopic {
+  id: string
+  title: string
+  specific: boolean
+  lesson: ReviewDestination | null
+  practice: ReviewDestination
+  fallback: ReviewDestination | null
+}
+
 export interface AttemptStart {
+  final_availability?: FinalAvailability | null
+  assessment_version?: number | null
+  evidence?: QuizEvidence
   attempt_id: number
   user_id: number
   status: 'open' | 'closed' | 'superseded'
@@ -226,9 +319,18 @@ export interface AttemptStart {
   mode: 'formative' | 'summative'
   pass_mark: number
   items: QuizItem[]
+  review_topics?: Record<string, ReviewTopic[]>
 }
 
 export interface GradeDetail {
+  concepts?: string[]
+  explanation?: string
+  row_feedback?: Record<string, {
+    missing_count: number
+    extra: string[]
+    reverse_missing_count: number
+    incoming_only: string[]
+  }>
   extra?: string[]
   missing_count?: number
   wrong_rows?: string[]
@@ -238,6 +340,8 @@ export interface GradeDetail {
 }
 
 export interface CheckResult {
+  evidence?: QuizEvidence
+  review_topics?: ReviewTopic[]
   revision: number
   item_id: string
   tries: number
@@ -258,6 +362,8 @@ export interface CheckResult {
 }
 
 export interface HintResult {
+  evidence?: QuizEvidence
+  review_topics?: ReviewTopic[]
   revision: number
   item_id: string
   level: number
@@ -271,6 +377,7 @@ export interface HintResult {
 }
 
 export interface ReviewRow {
+  review_topics?: ReviewTopic[]
   item_id: string
   objective: number
   score: number
@@ -285,6 +392,7 @@ export interface ReviewRow {
 }
 
 export interface FinishResult {
+  evidence?: QuizEvidence
   revision: number
   result: { score: number; passed?: boolean; review: ReviewRow[]; objectives: Record<string, number> }
   reward: Reward

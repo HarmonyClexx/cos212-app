@@ -4,18 +4,22 @@
 // end, then a criterion-referenced report per objective with revision recommendations.
 
 import { useEffect, useRef, useState } from 'react'
-import { useMutation } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { ApiError } from '../api/client'
-import { useProgressInvalidation, useStartAttempt } from '../api/hooks'
-import type { Answer, AttemptStart, CheckResult, FinishResult, HintResult, MasteryRow, QuizItem } from '../api/types'
+import { useFinalAvailability, useProgressInvalidation, useStartAttempt } from '../api/hooks'
+import type {
+  Answer, AttemptStart, CheckResult, FinalAvailability, FinishResult, HintResult, MasteryRow, QuizItem, ReviewDestination, ReviewTarget,
+} from '../api/types'
 import { Icon } from '../components/Icon'
 import { FeedbackBox, HintButton, Meter, masteryStatus } from '../components/bits'
 import type { Feedback } from '../engine/tracer'
 import { useIdle } from '../lib/useIdle'
-import { ItemView, isAnswered } from './items/QuizItems'
+import { useAnswerFeedback } from '../lib/answerFeedback'
+import { GradeExplanation, ItemView, RevisionLinks, emptyAnswer, isAnswered, reviewHref } from './items/QuizItems'
 import type { ActivityProps } from './shared'
-import { useQuizDraft, type QuizDraft } from './useQuizDraft'
+import { FinalAssignmentStatus, ItemResponseEvidence, RecordedQuizSummary } from './QuizEvidence'
+import { flushQuizDraft, useQuizDraft, type QuizDraft } from './useQuizDraft'
 
 const OBJ_NAMES: Record<number, string> = {
   1: 'Graph concepts', 2: 'Representation', 3: 'DFS traversal', 4: 'State & backtracking', 5: 'DFS vs BFS',
@@ -23,23 +27,41 @@ const OBJ_NAMES: Record<number, string> = {
 
 export function QuizActivity({ activity, onReward }: ActivityProps) {
   const start = useStartAttempt(activity.id)
+  const isFinal = activity.config.mode === 'summative'
+  const availability = useFinalAvailability(activity.id, isFinal)
   const [attempt, setAttempt] = useState<AttemptStart | null>(null)
   const started = useRef(false)
 
   useEffect(() => {
-    if (started.current) return
+    if (started.current || (isFinal && !availability.data?.has_saved_attempt)) return
     started.current = true
     start.mutate({}, { onSuccess: setAttempt })
-  }, [start])
+  }, [start, isFinal, availability.data])
 
-  if (start.isError) return (
+  if (isFinal && availability.isError && !attempt) return (
+    <div className="card empty-state" role="alert">
+      <p>Couldn't load final availability: {availability.error.message}</p>
+      {(!(availability.error instanceof ApiError) || availability.error.status >= 500) &&
+        <button className="btn primary" onClick={() => void availability.refetch()}>Retry</button>}
+    </div>
+  )
+  if (start.isError && !attempt) return (
     <div className="card empty-state" role="alert">
       <p>Couldn't open the quiz: {(start.error as Error).message}</p>
       {(!(start.error instanceof ApiError) || start.error.status >= 500) && (
         <button className="btn primary" style={{ marginTop: 12 }}
           onClick={() => start.mutate(start.variables ?? {}, { onSuccess: setAttempt })}>Retry</button>
       )}
+      {isFinal && start.error instanceof ApiError && start.error.status === 409 &&
+        <button className="btn primary" onClick={() => window.location.reload()}>Reload saved final</button>}
     </div>
+  )
+  if (!attempt && isFinal && availability.data && !availability.data.has_saved_attempt && !start.isPending) return (
+    <FinalChoice availability={availability.data} activityId={activity.id} disabled={start.isPending}
+      onStart={(repeat) => {
+        started.current = true
+        start.mutate({ new_attempt: true, repeat_practice: repeat, request_id: crypto.randomUUID() }, { onSuccess: setAttempt })
+      }} />
   )
   if (!attempt) return <div className="skeleton" style={{ height: 420 }} />
   if (attempt.status === 'closed') return (
@@ -49,18 +71,50 @@ export function QuizActivity({ activity, onReward }: ActivityProps) {
         <p className="muted" style={{ marginTop: 8 }}>
           {attempt.compatible ? 'Your previous result is saved.' : 'This result was recorded under an earlier quiz format and has not been regraded.'}
         </p>
-        <button className="btn primary" style={{ marginTop: 12 }} disabled={start.isPending}
-          onClick={() => start.mutate({ new_attempt: true }, { onSuccess: setAttempt })}>Start another attempt</button>
+        {start.isError && <p className="error-text" role="alert">{start.error.message}</p>}
+        {!isFinal && <button className="btn primary" style={{ marginTop: 12 }} disabled={start.isPending}
+          onClick={() => start.mutate({ new_attempt: true }, { onSuccess: setAttempt })}>Start another attempt</button>}
       </div>
+      {isFinal && (availability.data ?? attempt.final_availability) &&
+        <FinalChoice availability={(availability.data ?? attempt.final_availability)!} activityId={activity.id}
+          disabled={start.isPending} onStart={(repeat) =>
+            start.mutate({ new_attempt: true, repeat_practice: repeat, request_id: crypto.randomUUID() }, { onSuccess: setAttempt })} />}
+      {attempt.mode === 'formative' && <RecordedQuizSummary summary={attempt.evidence?.summary} />}
+      {attempt.compatible && attempt.mode === 'formative' && (
+        <div className="card">
+          {attempt.items.map((item) => <ItemResponseEvidence key={item.id} item={item} evidence={attempt.evidence} />)}
+        </div>
+      )}
       {attempt.compatible && attempt.mode === 'summative' && attempt.report && (
         <SummativeReport items={attempt.items} answers={attempt.answers} reflections={attempt.reflections}
-          report={attempt.report} title={activity.title} />
+          report={attempt.report} title={activity.title} activityId={activity.id} />
       )}
     </div>
   )
   return attempt.mode === 'formative'
-    ? <Formative key={attempt.attempt_id} attempt={attempt} onReward={onReward} />
-    : <Summative key={attempt.attempt_id} attempt={attempt} onReward={onReward} activityTitle={activity.title} />
+    ? <Formative key={attempt.attempt_id} attempt={attempt} onReward={onReward} activityId={activity.id} />
+    : <Summative key={attempt.attempt_id} attempt={attempt} onReward={onReward} activityTitle={activity.title} activityId={activity.id} />
+}
+
+function FinalChoice({ availability, activityId, disabled, onStart }: {
+  availability: FinalAvailability; activityId: string; disabled: boolean; onStart: (repeat: boolean) => void
+}) {
+  const navigate = useNavigate()
+  const repeat = availability.exhausted && !availability.has_open_attempt
+  return <div className="card">
+    <h3>{availability.exhausted ? 'Both reserved final versions have been issued' : 'Reserved final versions'}</h3>
+    <p className="small muted" style={{ marginTop: 10 }}>
+      {availability.exhausted
+        ? 'Issuance, not correctness, exhausts the bank. You can revise or choose explicitly labelled repeat practice; no third unused final is available.'
+        : `${availability.unused_versions.length} unused version(s) remain. Starting records that version as issued, even if you leave without submitting. Scores are task-specific, not validated lecture readiness.`}
+    </p>
+    <button className="btn primary" style={{ marginTop: 12 }} disabled={disabled} onClick={() => onStart(repeat)}>
+      {availability.has_open_attempt ? 'Resume saved final' : repeat ? 'Repeat practice'
+        : `Start reserved final ${availability.unused_versions[0]}`}
+    </button>
+    {availability.exhausted && <RevisionLinks topics={availability.revision_topics} disabled={() => disabled}
+      onOpen={(topic, target) => { const destination = topic[target]; if (destination) navigate(reviewHref(destination, activityId)) }} />}
+  </div>
 }
 
 function DraftStatus({ draft }: { draft: QuizDraft }) {
@@ -68,7 +122,7 @@ function DraftStatus({ draft }: { draft: QuizDraft }) {
     <div className="row wrap small" style={{ marginBottom: 16 }} role="status">
       <span className={draft.error ? 'error-text' : 'muted'}>
         {draft.conflict ? 'The saved quiz changed. Reload to reconcile this tab; its unsaved edits will not overwrite the saved state.'
-          : draft.uncertain ? 'The last action could not be confirmed. Retry that action before editing or leaving.'
+          : draft.uncertain ? `The last action could not be confirmed. Retry that action before editing or leaving. ${draft.error}`
             : draft.error ? `Not saved: ${draft.error}`
               : draft.status === 'saving' ? 'Saving…' : 'Saved to your account'}
       </span>
@@ -76,11 +130,16 @@ function DraftStatus({ draft }: { draft: QuizDraft }) {
         ? <button className="btn sm" onClick={() => window.location.reload()}>Reload saved quiz</button>
         : draft.error && !draft.uncertain && <button className="btn sm" disabled={draft.busy}
           onClick={() => void draft.flush().catch(() => {})}>Retry save</button>}
+      {draft.studyPending && <button className="btn sm" disabled={draft.busy || draft.conflict}
+        onClick={() => void draft.retryStudy().catch(() => {})}>Retry review navigation</button>}
     </div>
   )
 }
 
-function Formative({ attempt, onReward }: { attempt: AttemptStart; onReward: ActivityProps['onReward'] }) {
+function Formative({ attempt, onReward, activityId }: {
+  attempt: AttemptStart; onReward: ActivityProps['onReward']; activityId: string
+}) {
+  const navigate = useNavigate()
   const items = attempt.items
   const draft = useQuizDraft(attempt)
   const { idx, setIdx, answers } = draft
@@ -88,13 +147,25 @@ function Formative({ attempt, onReward }: { attempt: AttemptStart; onReward: Act
   const [revealed, setRevealed] = useState(attempt.revealed)
   const [hints, setHints] = useState(attempt.hints)
   const [last, setLast] = useState(attempt.last)
+  const [topics, setTopics] = useState(attempt.review_topics ?? {})
+  const [evidence, setEvidence] = useState(attempt.evidence)
+  const qc = useQueryClient()
   const invalidate = useProgressInvalidation()
   const check = useMutation({ mutationFn: (body: { item_id: string; answer?: Answer; reveal: boolean }) =>
     draft.perform<CheckResult>('check', body) })
   const hint = useMutation({ mutationFn: (body: { item_id: string }) => draft.perform<HintResult>('hint', body) })
   const finish = useMutation({ mutationFn: () => draft.perform<FinishResult>('finish', {}), onSuccess: invalidate })
+  const review = useMutation({ mutationFn: (body: { item_id: string; topic_id: string; target: ReviewTarget }) =>
+    draft.perform<{ revision: number; destination: ReviewDestination }>('review-topic', body),
+    onSuccess: (r) => {
+      void qc.invalidateQueries({ queryKey: ['me'] })
+      navigate(reviewHref(r.destination, activityId))
+    },
+  })
 
   const item = items[idx]
+  const { announce: answerFeedback, praised } = useAnswerFeedback(`${attempt.user_id}:${attempt.attempt_id}:${item.id}`)
+  const feedbackRevision = useRef(attempt.revision)
   const res = results[item.id]
   const resolved = (i: QuizItem) => results[i.id]?.correct || revealed[i.id]
   const isResolved = resolved(item)
@@ -103,6 +174,14 @@ function Formative({ attempt, onReward }: { attempt: AttemptStart; onReward: Act
   const doCheck = (reveal = false) =>
     check.mutate({ item_id: item.id, answer: reveal ? undefined : answers[item.id], reveal }, {
       onSuccess: (r) => {
+        if (!reveal && r.revision > feedbackRevision.current) {
+          feedbackRevision.current = r.revision
+          answerFeedback(`${item.id}:${r.revision}`, r.correct)
+        }
+        if (r.evidence) setEvidence(r.evidence)
+        void qc.invalidateQueries({ queryKey: ['me'] })
+        review.reset()
+        if (r.review_topics) setTopics((m) => ({ ...m, [item.id]: r.review_topics! }))
         setResults((m) => ({ ...m, [item.id]: { ...r, tries: reveal ? (m[item.id]?.tries ?? r.tries) : r.tries } }))
         setLast((m) => ({ ...m, [item.id]: 'check' }))
         if (reveal) setRevealed((m) => ({ ...m, [item.id]: true }))
@@ -112,6 +191,10 @@ function Formative({ attempt, onReward }: { attempt: AttemptStart; onReward: Act
   const askHint = () =>
     hint.mutate({ item_id: item.id }, {
       onSuccess: (h) => {
+        if (h.evidence) setEvidence(h.evidence)
+        void qc.invalidateQueries({ queryKey: ['me'] })
+        review.reset()
+        if (h.review_topics) setTopics((m) => ({ ...m, [item.id]: h.review_topics! }))
         setHints((m) => ({ ...m, [item.id]: h }))
         setLast((m) => ({ ...m, [item.id]: 'hint' }))
       },
@@ -131,8 +214,8 @@ function Formative({ attempt, onReward }: { attempt: AttemptStart; onReward: Act
       ? {
           tone: res.correct ? 'good' : revealed[item.id] ? 'info' : 'warn',
           tier: res.correct ? 0 : revealed[item.id] ? 3 : res.tier,
-          title: res.correct ? (res.tries === 1 ? 'Correct — first try!' : `Correct after ${res.tries} tries.`) : revealed[item.id] ? 'Here is the worked answer' : res.feedback,
-          body: res.correct || revealed[item.id] ? res.explanation : res.hint,
+          title: res.correct ? `${praised ? 'Well done! ' : ''}${res.tries === 1 ? 'Correct — first try!' : `Correct after ${res.tries} tries.`}` : revealed[item.id] ? 'Here is the worked answer' : res.feedback,
+          body: res.correct || revealed[item.id] ? res.explanation : res.detail.explanation ? undefined : res.hint,
         }
       : idle
         ? { tone: 'hint', tier: 0, title: 'Take your time', body: 'If you’re not sure where to start, press Hint. It costs much less than a wrong guess.' }
@@ -162,9 +245,26 @@ function Formative({ attempt, onReward }: { attempt: AttemptStart; onReward: Act
       <div style={{ marginTop: 16 }}>
         {fb && (
           <FeedbackBox fb={fb}>
+            {!showingHint && !isResolved && res?.detail.explanation && (
+              <>
+                <GradeExplanation detail={res.detail} label="About your last checked answer" />
+                {res.hint && <p className="small" style={{ marginTop: 10 }}>
+                  <b>{res.tier >= 2 ? 'A bigger hint' : 'Hint'}:</b> {res.hint}
+                </p>}
+              </>
+            )}
+            {!isResolved && (
+              <RevisionLinks topics={topics[item.id]} active
+                onOpen={(topic, target) => review.mutate({ item_id: item.id, topic_id: topic.id, target })}
+                retry={review.isError ? review.variables : undefined}
+                disabled={(topic, target) => draft.busy || draft.conflict || (draft.uncertain &&
+                  !(review.isError && review.variables?.item_id === item.id &&
+                    review.variables.topic_id === topic.id && review.variables.target === target))} />
+            )}
             {!showingHint && res && !res.correct && !revealed[item.id] && res.can_reveal && (
               <button className="btn sm hint" style={{ marginTop: 10 }} onClick={() => doCheck(true)}
-                disabled={draft.busy || draft.conflict || (draft.uncertain && !check.isError)}>
+                disabled={draft.busy || draft.conflict || (draft.uncertain &&
+                  (draft.pendingAction !== 'check' || !check.variables?.reveal))}>
                 <Icon name="eye" size={16} /> Show me the answer
               </button>
             )}
@@ -172,11 +272,13 @@ function Formative({ attempt, onReward }: { attempt: AttemptStart; onReward: Act
         )}
       </div>
 
+      <ItemResponseEvidence item={item} evidence={evidence} />
+
       <div className="controls" style={{ marginTop: 16 }}>
         <button className="btn ghost" onClick={() => setIdx(Math.max(0, idx - 1))}
           disabled={idx === 0 || draft.busy || draft.uncertain || draft.conflict}><Icon name="chevronLeft" /> Back</button>
         <span className="spacer" />
-        {(check.isError || hint.isError) && <span className="error-text">{((check.error ?? hint.error) as Error).message}</span>}
+        {(check.isError || hint.isError || review.isError) && <span className="error-text">{((check.error ?? hint.error ?? review.error) as Error).message}</span>}
         {!isResolved && worth < 1 && (
           <span className="hint-note" title="Credit if your next answer is right. Getting there yourself is always worth at least 20%.">
             <Icon name="target" size={14} /> Now worth <b>{Math.round(worth * 100)}%</b>
@@ -184,13 +286,14 @@ function Formative({ attempt, onReward }: { attempt: AttemptStart; onReward: Act
         )}
         {!isResolved && (
           <HintButton level={level} max={2} onClick={askHint}
-            disabled={draft.busy || draft.conflict || (draft.uncertain && !hint.isError)}
+            disabled={draft.busy || draft.conflict || (draft.uncertain && draft.pendingAction !== 'hint')}
             nudge={idle || (!!res && !res.correct && level < 2)}
             cost="A hint costs 15% of this question — half the price of a wrong guess." />
         )}
         {!isResolved && (
           <button className="btn primary" onClick={() => doCheck()}
-            disabled={draft.busy || draft.conflict || (draft.uncertain && !check.isError) || !isAnswered(item, answers[item.id])}>
+            disabled={draft.busy || draft.conflict || (draft.uncertain &&
+              (draft.pendingAction !== 'check' || check.variables?.reveal)) || !isAnswered(item, answers[item.id])}>
             <Icon name="check" /> {check.isError ? 'Retry check' : 'Check'}
           </button>
         )}
@@ -212,7 +315,9 @@ function Formative({ attempt, onReward }: { attempt: AttemptStart; onReward: Act
   )
 }
 
-function Summative({ attempt, onReward, activityTitle }: { attempt: AttemptStart; onReward: ActivityProps['onReward']; activityTitle: string }) {
+function Summative({ attempt, onReward, activityTitle, activityId }: {
+  attempt: AttemptStart; onReward: ActivityProps['onReward']; activityTitle: string; activityId: string
+}) {
   const items = attempt.items
   const draft = useQuizDraft(attempt)
   const { idx, setIdx, answers } = draft
@@ -234,11 +339,12 @@ function Summative({ attempt, onReward, activityTitle }: { attempt: AttemptStart
     },
   })
 
-  if (report) return <SummativeReport items={items} answers={answers} reflections={draft.reflections} report={report} title={activityTitle} />
+  if (report) return <SummativeReport items={items} answers={answers} reflections={draft.reflections} report={report} title={activityTitle} activityId={activityId} />
 
   return (
     <div className="card">
       {attempt.notice && <p role="status">{attempt.notice}</p>}
+      <FinalAssignmentStatus evidence={attempt.evidence} />
       <DraftStatus draft={draft} />
       <div className="quiz-top">
         <span className="chip danger"><Icon name="sword" size={14} /> Summative · no hints</span>
@@ -281,11 +387,25 @@ function Summative({ attempt, onReward, activityTitle }: { attempt: AttemptStart
   )
 }
 
-function SummativeReport({ items, answers, reflections, report, title }: {
+function SummativeReport({ items, answers, reflections, report, title, activityId }: {
   items: QuizItem[]; answers: Record<string, Answer>; reflections: Record<string, string>;
-  report: Omit<FinishResult, 'reward'>; title: string
+  report: Omit<FinishResult, 'reward'>; title: string; activityId: string
 }) {
   const navigate = useNavigate()
+  const [navigating, setNavigating] = useState(false)
+  const [reviewError, setReviewError] = useState('')
+  const openReview = async (destination: ReviewDestination) => {
+    setNavigating(true)
+    setReviewError('')
+    try {
+      await flushQuizDraft()
+      navigate(reviewHref(destination, activityId))
+    } catch (e) {
+      setReviewError((e as Error).message)
+    } finally {
+      setNavigating(false)
+    }
+  }
   const { result, recommendations, mastery } = report
   const masteryBy = Object.fromEntries(mastery.map((m) => [m.objective, m])) as Record<number, MasteryRow>
   return (
@@ -293,13 +413,18 @@ function SummativeReport({ items, answers, reflections, report, title }: {
       <div className="card">
         <div className="row wrap" style={{ gap: 16 }}>
           <div>
-            <div className="eyebrow">{title} · report</div>
+            <div className="eyebrow">{title} · this attempt</div>
             <h2 style={{ marginTop: 4 }}>{result.passed ? 'Passed' : 'Not yet passed'} · {Math.round(result.score * 100)}%</h2>
           </div>
           <span className="spacer" />
-          <span className={`chip ${result.passed ? 'chalk' : 'danger'}`}><Icon name={result.passed ? 'check' : 'x'} size={14} /> {result.passed ? 'Criterion met' : 'Criterion not met'}</span>
+          <span className={`chip ${result.passed ? 'chalk' : 'danger'}`}><Icon name={result.passed ? 'check' : 'x'} size={14} /> {result.passed ? 'Pass threshold met' : 'Pass threshold not met'}</span>
         </div>
+        <p className="small muted" style={{ marginTop: 12 }}>
+          These scores describe this submitted attempt, not validated mastery or lecture readiness.
+        </p>
+        <FinalAssignmentStatus evidence={report.evidence} />
         <div style={{ marginTop: 16 }}>
+          <div className="small muted" style={{ marginBottom: 8 }}>Objective scores on this attempt · reference target 70%</div>
           {Object.entries(result.objectives).map(([o, s]) => {
             const m = masteryBy[Number(o)]
             const st = masteryStatus(s, 1)
@@ -307,14 +432,16 @@ function SummativeReport({ items, answers, reflections, report, title }: {
               <div className="mastery-row" key={o}>
                 <span className="name">Objective {o} · {OBJ_NAMES[Number(o)]}</span>
                 <span className="val">{Math.round(s * 100)}%</span>
-                <Meter value={s} color={st.color} target={0.7} label={`Objective ${o} score`} />
+                <Meter value={s} color={st.color} target={0.7} label={`Objective ${o} score on this attempt`} />
                 <span className="meta"><span className="status"><Icon name={st.icon} size={14} style={{ color: st.color }} /> {st.label}</span>
-                  {m && <span>· running mastery {Math.round(m.value * 100)}%</span>}</span>
+                  {m && <span>· running practice score {m.evidence ? `${Math.round(m.value * 100)}%` : 'not recorded'}</span>}</span>
               </div>
             )
           })}
         </div>
       </div>
+
+      <RecordedQuizSummary summary={report.evidence?.summary} />
 
       {recommendations.filter((r) => r.type === 'revise').length > 0 && (
         <div className="card">
@@ -333,6 +460,7 @@ function SummativeReport({ items, answers, reflections, report, title }: {
 
       <div className="card">
         <div className="card-title"><Icon name="eye" size={18} /> Question review</div>
+        {reviewError && <p className="error-text" role="alert">{reviewError}</p>}
         <div className="stack-v">
           {result.review.map((r, i) => {
             const it = items.find((x) => x.id === r.item_id)!
@@ -346,11 +474,15 @@ function SummativeReport({ items, answers, reflections, report, title }: {
                 <div style={{ marginTop: 12 }}>
                   {/* Lists and orders show the learner's own attempt with wrong rows/positions marked;
                       the explanation below spells out the correct one. */}
-                  <ItemView item={it} value={answers[it.id] ?? r.your_answer as Answer} locked onChange={() => {}} detail={r.detail}
+                  <ItemView item={it} value={answers[it.id] ?? r.your_answer as Answer ?? emptyAnswer(it)} locked onChange={() => {}} detail={r.detail}
                     reflection={reflections[it.id]}
                     answer={['mcq', 'graph_select', 'short_answer'].includes(it.type) ? r.answer : undefined} />
                   {r.feedback && <p className="small" style={{ marginTop: 10 }}><b>{r.feedback}</b></p>}
+                  {!r.correct && <GradeExplanation detail={r.detail} label="About your submitted answer" />}
+                  {!r.correct && <RevisionLinks topics={r.review_topics} disabled={() => navigating}
+                    onOpen={(topic, target) => { const destination = topic[target]; if (destination) void openReview(destination) }} />}
                   {r.explanation && <p className="small muted" style={{ marginTop: 4 }}>{r.explanation}</p>}
+                  <ItemResponseEvidence item={it} evidence={report.evidence} />
                 </div>
               </details>
             )

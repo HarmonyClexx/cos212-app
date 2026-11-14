@@ -1,12 +1,13 @@
 // Gagné event 4 / Merrill demonstration: watch DFS step by step before doing it yourself.
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { useSubmitActivity } from '../api/hooks'
 import { StackPanel, VisitedStrip } from '../components/DataStructures'
 import { GraphCanvas } from '../components/GraphCanvas'
 import { Icon } from '../components/Icon'
 import { FeedbackBox } from '../components/bits'
-import { dfsTrace } from '../engine/graph'
+import { adjacency, dfsTrace } from '../engine/graph'
+import { demoCheckpoints, demoTransition, initialDemoState, type DemoAction, type DemoState } from '../engine/demo'
 import { narrate } from '../engine/tracer'
 import { addMark, traceVisuals, type ActivityProps } from './shared'
 
@@ -14,31 +15,42 @@ export function DemoActivity({ activity, onReward }: ActivityProps) {
   const g = activity.config.graph!
   const start = activity.config.start!
   const events = useMemo(() => dfsTrace(g, start), [g, start])
-  const [i, setI] = useState(0)
-  const [playing, setPlaying] = useState(false)
+  const checkpoints = useMemo(() => demoCheckpoints(g, events), [g, events])
+  const [state, dispatch] = useReducer(
+    (s: DemoState, a: DemoAction) => demoTransition(g, events, checkpoints, s, a),
+    initialDemoState,
+  )
+  const { i, playing, seenEnd, pending, feedback } = state
   const [speed, setSpeed] = useState(1)
-  const [seenEnd, setSeenEnd] = useState(false)
+  const predictionHeading = useRef<HTMLHeadingElement>(null)
+  const predictionFeedback = useRef<HTMLDivElement>(null)
   const submit = useSubmitActivity(activity.id)
   const last = events.length - 1
 
   useEffect(() => {
     if (!playing) return
-    if (i >= last) { setPlaying(false); return }
-    const t = setTimeout(() => setI((x) => x + 1), 1700 / speed)
+    const t = setTimeout(() => dispatch({ type: 'next', automaticAt: i }), 1700 / speed)
     return () => clearTimeout(t)
-  }, [playing, i, last, speed])
+  }, [playing, i, speed])
 
-  useEffect(() => { if (i === last) setSeenEnd(true) }, [i, last])
+  useEffect(() => {
+    if (pending !== null) predictionHeading.current?.focus()
+    else if (feedback) predictionFeedback.current?.focus()
+  }, [pending, feedback])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.target as HTMLElement).tagName === 'INPUT') return
-      if (e.key === 'ArrowRight') setI((x) => Math.min(last, x + 1))
-      if (e.key === 'ArrowLeft') setI((x) => Math.max(0, x - 1))
+      const target = e.target
+      if (!(target instanceof HTMLElement) || target.closest('input,select,textarea,[contenteditable],dialog')) return
+      if (e.altKey || e.ctrlKey || e.metaKey) return
+      if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+        e.preventDefault()
+        dispatch({ type: e.key === 'ArrowRight' ? 'next' : 'previous' })
+      }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [last])
+  }, [])
 
   const vis = traceVisuals(g, events, i, start)
   const ev = events[i]
@@ -48,6 +60,8 @@ export function DemoActivity({ activity, onReward }: ActivityProps) {
   if (isBack) addMark(nodeMarks, [ev.node], 'deadend')
 
   const focusBack = activity.config.focus === 'backtracking'
+  const current = ev.stack.at(-1)
+  const neighbours = current ? adjacency(g)[current] : []
 
   return (
     <div className="act-grid">
@@ -61,13 +75,29 @@ export function DemoActivity({ activity, onReward }: ActivityProps) {
         <GraphCanvas graph={g} nodeMarks={nodeMarks} edgeMarks={vis.edgeMarks} thread={vis.thread} badges={vis.badges}
           ariaLabel={`DFS demonstration, step ${i + 1}: ${n.title}`} />
 
+        {pending !== null && (
+          <section className="card flat demo-prediction" aria-label="DFS prediction">
+            <h3 ref={predictionHeading} tabIndex={-1}>Predict the next action from {current}</h3>
+            <p className="small muted">Ungraded practice: choose a prediction or skip and reveal. Neither changes your score or rewards.</p>
+            <div className="controls">
+              {neighbours.map((node) => (
+                <button key={node} className="btn" onClick={() => dispatch({ type: 'answer', node })}>Visit {node}</button>
+              ))}
+              <button className="btn" onClick={() => dispatch({ type: 'answer', node: null })}>Backtrack (pop)</button>
+              <button className="btn primary" onClick={() => dispatch({ type: 'reveal' })}>Skip / reveal</button>
+            </div>
+          </section>
+        )}
+        <div ref={predictionFeedback} tabIndex={feedback ? -1 : undefined}>
+          <FeedbackBox fb={feedback} />
+        </div>
         <div className="controls">
-          <button className="btn" onClick={() => setI(0)} aria-label="Back to start"><Icon name="restart" /></button>
-          <button className="btn" onClick={() => setI((x) => Math.max(0, x - 1))} disabled={i === 0} aria-label="Previous step"><Icon name="prev" /></button>
-          <button className="btn primary" onClick={() => { if (i >= last) setI(0); setPlaying((p) => !p) }} style={{ minWidth: 110 }}>
+          <button className="btn" onClick={() => dispatch({ type: 'restart' })} aria-label="Back to start"><Icon name="restart" /></button>
+          <button className="btn" onClick={() => dispatch({ type: 'previous' })} disabled={i === 0} aria-label="Previous step"><Icon name="prev" /></button>
+          <button className="btn primary" onClick={() => dispatch({ type: 'play' })} disabled={pending !== null} style={{ minWidth: 110 }}>
             <Icon name={playing ? 'pause' : 'play'} /> {playing ? 'Pause' : i >= last ? 'Replay' : 'Play'}
           </button>
-          <button className="btn" onClick={() => setI((x) => Math.min(last, x + 1))} disabled={i === last} aria-label="Next step"><Icon name="next" /></button>
+          <button className="btn" onClick={() => dispatch({ type: 'next' })} disabled={i === last || pending !== null} aria-label="Next step"><Icon name="next" /></button>
           <label className="row small muted" style={{ marginLeft: 6 }}>
             Speed
             <select className="input" style={{ height: 34, padding: '0 8px' }} value={speed} onChange={(e) => setSpeed(Number(e.target.value))}>
@@ -81,7 +111,7 @@ export function DemoActivity({ activity, onReward }: ActivityProps) {
             <Icon name="check" /> I've got it
           </button>
         </div>
-        <p className="faint tiny" style={{ marginTop: 8 }}>Tip: use ← and → to step.</p>
+        <p className="faint tiny" style={{ marginTop: 8 }}>Tip: use ← and → to step. At a prediction, answer or Skip / reveal to continue. Play resumes autoplay.</p>
       </div>
 
       <div className="stack-v">

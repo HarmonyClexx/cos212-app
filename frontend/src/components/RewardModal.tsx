@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Reward } from '../api/types'
 import { confetti } from '../lib/confetti'
+import { useCelebrationsDisabled } from '../lib/answerFeedback'
 import { Icon } from './Icon'
 import { Meter, Stars } from './bits'
 
@@ -31,23 +32,67 @@ export function RewardModal({ reward, title, subtitle, graded, onContinue, onRet
 }) {
   const xp = useCountUp(reward.xp_gained)
   const btn = useRef<HTMLButtonElement>(null)
+  const dialog = useRef<HTMLDialogElement>(null)
+  const [celebrationsDisabled] = useCelebrationsDisabled()
 
   useEffect(() => {
+    const modal = dialog.current
+    if (!modal) return
+    const previousFocus = document.activeElement
+    const previousPath = window.location.pathname
+    if (!modal.open) modal.showModal()
     btn.current?.focus()
-    if (reward.completed) confetti(reward.level_up || reward.new_badges.length ? 1.4 : reward.stars === 3 ? 1 : 0.6)
+
+    return () => {
+      modal.close()
+      requestAnimationFrame(() => {
+        if (document.querySelector('dialog[open]')) return
+        if (window.location.pathname === previousPath && previousFocus !== document.body
+          && (previousFocus instanceof HTMLElement || previousFocus instanceof SVGElement) && previousFocus.isConnected) {
+          previousFocus.focus()
+          if (document.activeElement === previousFocus) return
+        }
+        const target = document.querySelector<HTMLElement>('.activity-intro h2')
+          ?? document.querySelector<HTMLElement>('main h1')
+          ?? document.querySelector<HTMLElement>('main')
+        if (target) { target.tabIndex = -1; target.focus() }
+      })
+    }
   }, [reward])
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onContinue()
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onContinue])
+    const modal = dialog.current
+    if (reward.completed && !celebrationsDisabled && modal) {
+      return confetti(reward.level_up || reward.new_badges.length ? 1.4 : reward.stars === 3 ? 1 : 0.6, modal)
+    }
+  }, [reward, celebrationsDisabled])
 
-  const heading = title ?? (!reward.completed ? 'Not quite yet' : reward.stars === 3 ? 'Flawless!' : reward.stars === 2 ? 'Great work!' : 'Completed!')
+  const heading = title ?? (
+    !reward.completed ? 'Not quite yet'
+      : !graded ? 'Completed!'
+      : reward.score === 1 ? 'Flawless!'
+      : reward.stars >= 2 ? 'Great work!'
+      : 'Completed!'
+  )
   const lv = reward.level
 
   return (
-    <div className="overlay" role="dialog" aria-modal="true" aria-labelledby="reward-title">
+    <dialog ref={dialog} className="overlay" role="dialog" aria-modal="true" aria-labelledby="reward-title"
+      onKeyDown={(event) => {
+        if (event.key !== 'Tab') return
+        const buttons = event.currentTarget.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')
+        const first = buttons[0]
+        const last = buttons[buttons.length - 1]
+        if (!first || !last) return
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault()
+          last.focus()
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault()
+          first.focus()
+        }
+      }}
+      onCancel={(event) => { event.preventDefault(); onContinue() }}>
       <div className="modal">
         {graded && (
           <div className="big-stars"><Stars count={reward.stars} size={44} pop /></div>
@@ -95,13 +140,13 @@ export function RewardModal({ reward, title, subtitle, graded, onContinue, onRet
           </div>
         )}
 
-        <div className="row" style={{ marginTop: 22, justifyContent: 'center' }}>
+        <div className="row" style={{ marginTop: 22, justifyContent: 'center', flexWrap: 'wrap' }}>
           {onRetry && graded && reward.stars < 3 && (
             <button className="btn" onClick={onRetry}><Icon name="restart" /> Try for {reward.stars < 2 ? 'more stars' : '3 stars'}</button>
           )}
           <button ref={btn} className="btn primary" onClick={onContinue}>{continueLabel} <Icon name="arrowRight" /></button>
         </div>
       </div>
-    </div>
+    </dialog>
   )
 }

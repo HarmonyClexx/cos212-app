@@ -1,10 +1,11 @@
 """Quiz banks, aligned item-by-item to the five instructional objectives.
 
-Formative banks give tiered feedback and allow retries; the summative bank ("Face the
-Minotaur") uses unseen graphs to test transfer and reports mastery per objective.
+Formative banks give tiered feedback and allow retries. Retain the legacy final
+for historical attempts; new finals use the two private reserved banks.
 """
 
-from app.content.schema import Assessment, Item
+from app.content.reserved_finals import FINAL_BANK_VERSION, FINAL_BANKS
+from app.content.schema import Assessment, Item, OptionFeedback
 
 ASSESSMENT_VERSION = 2
 COMPARISON_REASONS = [
@@ -82,6 +83,17 @@ _add(Assessment(id="representation-check", mode="formative", items=[
          prompt="In the adjacency **matrix** of an *undirected* graph, M[B][D] = 1. What is M[D][B]?",
          options=["1", "0", "It depends on the graph", "2"],
          answer=[0],
+         option_feedback={
+             1: OptionFeedback(concept="undirected-matrix-symmetry",
+                               explanation="Reversing the row and column describes the same undirected edge. "
+                                           "A two-way connection cannot disappear just because its endpoints swap."),
+             2: OptionFeedback(concept="undirected-matrix-symmetry",
+                               explanation="The stated edge already establishes this connection. "
+                                           "Undirected edges do not depend on which endpoint you start from."),
+             3: OptionFeedback(concept="undirected-matrix-symmetry",
+                               explanation="This is a 0/1 adjacency matrix: a cell records whether an edge exists, "
+                                           "not the number of directions you can travel along it."),
+         },
          hint="Think about what an undirected edge means for both endpoints.",
          hint2="An undirected edge is a two-way corridor. M[B][D] = 1 says 'you can go from B to D'. M[D][B] asks whether you can walk the same corridor from D to B.",
          explanation="Undirected edges go both ways, so the matrix is symmetric: M[D][B] = M[B][D] = 1."),
@@ -89,6 +101,17 @@ _add(Assessment(id="representation-check", mode="formative", items=[
          prompt="Row C of an adjacency matrix (columns A, B, C, D, E) is **[0, 1, 0, 0, 1]**. Which are C's neighbours?",
          options=["B and E", "A, C and D", "B only", "C and E"],
          answer=[0],
+         option_feedback={
+             1: OptionFeedback(concept="matrix-column-interpretation",
+                               explanation="Those columns contain 0. A 0 means no edge to that column's vertex; "
+                                           "look for columns containing 1 instead."),
+             2: OptionFeedback(concept="matrix-column-interpretation",
+                               explanation="Stopping at the first 1 leaves another neighbour out. "
+                                           "Read every column in the row, not just the first marked column."),
+             3: OptionFeedback(concept="matrix-column-interpretation",
+                               explanation="C is the row label, not automatically a neighbour. "
+                                           "Its own column contains 0; neighbours come from columns marked 1."),
+         },
          hint="A 1 in a column means 'there is an edge to that column's vertex'.",
          hint2="Write the column letters above the row: A B C D E over 0 1 0 0 1. Every column with a 1 beneath it is one of C's neighbours.",
          explanation="The 1s are in columns B and E, so C is adjacent to B and E."),
@@ -96,9 +119,18 @@ _add(Assessment(id="representation-check", mode="formative", items=[
          prompt="A graph has 10,000 vertices but each has only ~3 edges. Which representation wastes less memory?",
          options=["Adjacency list", "Adjacency matrix", "They use the same memory"],
          answer=[0],
+         option_feedback={
+             1: OptionFeedback(concept="representation-storage",
+                               explanation="A matrix reserves a cell for every vertex pair, including missing edges. "
+                                           "With only a few neighbours per vertex, most of those cells are unused."),
+             2: OptionFeedback(concept="representation-storage",
+                               explanation="They store different amounts: a matrix stores every possible vertex pair, "
+                                           "while a list stores vertex rows and existing neighbours."),
+         },
          hint="A matrix stores a cell for *every* pair of vertices, edge or not.",
          hint2="Estimate both. A matrix stores one cell for every pair of vertices – n × n, edge or not. A list stores only the edges that exist, about 3 per vertex here. Compare 10,000 × 10,000 with 10,000 × 3.",
-         explanation="A matrix needs 10,000² cells (100 million). A list only stores the ~30,000 real edges."),
+         explanation="A matrix needs 10,000² cells (100 million). A list stores 10,000 vertex rows "
+                     "and about 30,000 neighbour entries."),
 ]))
 
 # --- Objective 4 ---------------------------------------------------------------------------
@@ -189,7 +221,18 @@ _add(Assessment(id="final", mode="summative", pass_mark=0.6, items=[
     Item(id="f4", type="mcq", objective=2,
          prompt="Row D of an adjacency matrix (columns A–F) is **[0, 1, 1, 0, 0, 1]**. Which are D's neighbours?",
          options=["B, C and F", "A, D and E", "B and C", "D only"],
-         answer=[0], hint="", explanation="The 1s sit in columns B, C and F."),
+         answer=[0],
+         option_feedback={
+             1: OptionFeedback(concept="matrix-column-interpretation",
+                               explanation="Those columns contain 0. A 0 means no edge to that column's vertex."),
+             2: OptionFeedback(concept="matrix-column-interpretation",
+                               explanation="The row contains more than two marked columns: every 1 represents "
+                                           "a neighbour, so read the whole row."),
+             3: OptionFeedback(concept="matrix-column-interpretation",
+                               explanation="D is the row label, not automatically a neighbour. "
+                                           "Its own column contains 0; use columns marked 1."),
+         },
+         hint="", explanation="The 1s sit in columns B, C and F."),
     Item(id="f5", type="order", objective=3, graph="final-1", algorithm="dfs", start="A",
          prompt="Click the vertices in **DFS** order from A (alphabetical tie-break).", hint="",
          explanation="A, B, C, D (dead end, back to C), E, F, G (dead end, back to F), H."),
@@ -219,3 +262,6 @@ _add(Assessment(id="final", mode="summative", pass_mark=0.6, items=[
                               "BFS's queue (FIFO) supports level-order exploration. Visiting the same vertices "
                               "does not mean visiting them in the same order."),
 ]))
+
+# Retain published banks when adding later versions; never replace an older entry.
+ASSESSMENT_VERSIONS = {2: ASSESSMENTS, FINAL_BANK_VERSION: {**ASSESSMENTS, **FINAL_BANKS}}

@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from './client'
 import type {
-  Answer, AttemptStart, CheckResult, FinishResult, HintResult, LeaderRow, Me, ModuleDetail, ModuleSummary, SubmitResult,
+  Answer, AttemptStart, CheckResult, FinalAvailability, FinishResult, HintResult, LeaderRow, Me, ModuleDetail, ModuleSummary, SubmitResult,
 } from './types'
 import type { TraceAction } from '../engine/tracer'
 
@@ -36,11 +36,17 @@ export function useSubmitActivity(activityId: string) {
 }
 
 export function useStartAttempt(activityId: string) {
+  const qc = useQueryClient()
   return useMutation({
-    mutationFn: (body: { new_attempt?: boolean } = {}) =>
+    mutationFn: (body: { new_attempt?: boolean; repeat_practice?: boolean; request_id?: string } = {}) =>
       api<AttemptStart>(`/activities/${activityId}/attempts`, { body }),
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ['final-availability', activityId] }) },
   })
 }
+
+export const useFinalAvailability = (activityId: string, enabled: boolean) =>
+  useQuery({ queryKey: ['final-availability', activityId],
+    queryFn: () => api<FinalAvailability>(`/activities/${activityId}/final-availability`), enabled, retry: false })
 
 export function useCheckItem(attemptId: number | undefined) {
   return useMutation({

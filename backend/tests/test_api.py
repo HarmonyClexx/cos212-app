@@ -278,12 +278,9 @@ def test_summative_reports_per_objective(client: TestClient, monkeypatch: pytest
     assert client.post(f"/api/attempts/{aid}/check", headers=h,
                        json={"item_id": "f1", "answer": ["C"]}).status_code == 403
 
-    answers = {
-        "f1": ["C", "F", "H"], "f2": [0],
-        "f3": {"A": ["B", "C"], "B": ["A", "D", "E"], "C": ["A", "F"], "D": ["B"], "E": ["B"], "F": ["C"]},
-        "f4": [0], "f5": list("ABCDEFGH"), "f6": list("CABDFE"), "f7": [0], "f8": [0], "f9": [0],
-        "f10": [2],
-    }
+    from app.content.reserved_finals import FINAL_BANKS, FINAL_GRAPHS
+    from app.services.grading import expected_answer
+    answers = {i.id: expected_answer(i, FINAL_GRAPHS) for i in FINAL_BANKS["final-a"].items}
     done = client.post(f"/api/attempts/{aid}/finish", headers=h, json={"answers": answers}).json()
     assert done["result"]["passed"] and done["result"]["score"] == 1.0
     assert done["result"]["objectives"] == {str(i): 1.0 for i in range(1, 6)}
@@ -299,6 +296,165 @@ def test_summative_reports_per_objective(client: TestClient, monkeypatch: pytest
 def unlocked(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.core.config import settings
     monkeypatch.setattr(settings, "unlock_all", True)
+
+
+def test_representation_diagnostics_resume_and_preserve_reveal_gates(client: TestClient, unlocked) -> None:
+    from app.content.graphs import GRAPHS
+    from app.engine.graph import Graph
+
+    h = register(client)
+    start = client.post("/api/activities/m2-build/attempts", headers=h).json()
+    assert all("option_feedback" not in i and "answer" not in i for i in start["items"])
+    aid = start["attempt_id"]
+    answer = {**Graph.from_spec(GRAPHS["build"]).adjacency(), "A": ["B", "C"]}
+    row = client.post(f"/api/attempts/{aid}/check", headers=h,
+                      json={"item_id": "r1", "answer": answer}).json()
+    assert row["score"] == 0.8 and row["worth"] == 0.7 and row["tier"] == 1
+    assert row["detail"]["row_feedback"]["A"]["missing_count"] == 1
+    assert "answer" not in row and "explanation" not in row
+    for tries in range(1, 4):
+        response = client.post(f"/api/attempts/{aid}/check", headers=h,
+                               json={"item_id": "r4", "answer": [2]}).json()
+        assert response["tries"] == tries and response["tier"] == tries
+        assert response["can_reveal"] == (tries == 3)
+        assert "first 1" in response["detail"]["explanation"] and response["hint"]
+        assert "answer" not in response and "explanation" not in response
+        if tries == 1:
+            resumed = client.post("/api/activities/m2-build/attempts", headers=h).json()
+            assert resumed["attempt_id"] == aid
+            assert resumed["results"]["r1"] == {k: v for k, v in row.items() if k not in {"revision", "evidence"}}
+            assert resumed["results"]["r4"] == {k: v for k, v in response.items() if k not in {"revision", "evidence"}}
+            assert client.post(f"/api/attempts/{aid}/check", headers=h,
+                               json={"item_id": "r4", "reveal": True}).status_code == 403
+    revealed = client.post(f"/api/attempts/{aid}/check", headers=h,
+                           json={"item_id": "r4", "reveal": True}).json()
+    assert revealed["answer"] == [0] and revealed["explanation"] and revealed["detail"] == {}
+    for iid, correct in {
+        "r1": Graph.from_spec(GRAPHS["build"]).adjacency(),
+        "r2": Graph.from_spec(GRAPHS["build-directed"]).adjacency(), "r3": [0], "r5": [0],
+    }.items():
+        assert client.post(f"/api/attempts/{aid}/check", headers=h,
+                           json={"item_id": iid, "answer": correct}).json()["correct"]
+    done = client.post(f"/api/attempts/{aid}/finish", headers=h, json={}).json()
+    assert done["result"]["score"] == 0.74 and done["reward"]["stars"] == 2
+
+
+def test_representation_final_feedback_is_withheld_until_submission(client: TestClient, unlocked) -> None:
+    h = register(client)
+    start = client.post("/api/activities/m6-final/attempts", headers=h).json()
+    assert all("option_feedback" not in i and "answer" not in i for i in start["items"])
+    aid = start["attempt_id"]
+    for action in ("check", "hint"):
+        assert client.post(f"/api/attempts/{aid}/{action}", headers=h,
+                           json={"item_id": "f4", "answer": [2]}).status_code == 403
+    assert client.put(f"/api/attempts/{aid}/draft", headers=h, json={
+        "revision": 0, "request_id": "matrix-draft", "current_item": "f4", "answers": {"f4": [2]},
+    }).status_code == 200
+    resumed = client.post("/api/activities/m6-final/attempts", headers=h).json()
+    assert resumed["results"] == {} and resumed["report"] is None
+    done = client.post(f"/api/attempts/{aid}/finish", headers=h, json={}).json()
+    row = next(r for r in done["result"]["review"] if r["item_id"] == "f4")
+    assert not row["correct"] and row["score"] == 0
+    assert "every 1" in row["detail"]["explanation"] and row["answer"] == [0]
+    closed = client.post("/api/activities/m6-final/attempts", headers=h).json()
+    assert closed["report"]["result"]["review"] == done["result"]["review"]
+
+
+def test_revision_review_is_owned_replayable_support_not_a_wrong_try(client: TestClient, unlocked) -> None:
+    h = register(client)
+    start = client.post("/api/activities/m2-build/attempts", headers=h).json()
+    aid = start["attempt_id"]
+    client.put(f"/api/attempts/{aid}/draft", headers=h, json={
+        "revision": 0, "request_id": "select-matrix", "current_item": "r4", "answers": {"r4": [2]},
+    })
+    checked = client.post(f"/api/attempts/{aid}/check", headers=h, json={"item_id": "r4", "answer": [2]}).json()
+    assert checked["review_topics"][0]["lesson"]["page_id"] == "matrix"
+    body = {"revision": checked["revision"], "request_id": "read-matrix", "item_id": "r4",
+            "topic_id": "matrix", "target": "lesson"}
+    other = register(client, "another-learner")
+    assert client.post(f"/api/attempts/{aid}/review-topic", headers=other, json=body).status_code == 404
+    response = client.post(f"/api/attempts/{aid}/review-topic", headers=h, json=body)
+    assert response.status_code == 200
+    assert response.json()["destination"]["page_id"] == "matrix"
+    assert client.post(f"/api/attempts/{aid}/review-topic", headers=h, json=body).json() == response.json()
+    assert client.post(f"/api/attempts/{aid}/review-topic", headers=h,
+                       json={**body, "target": "practice"}).status_code == 409
+    assert client.post(f"/api/attempts/{aid}/review-topic", headers=h,
+                       json={**body, "request_id": "stale-review"}).status_code == 409
+    state = client.get(f"/api/attempts/{aid}", headers=h).json()
+    assert state["answers"] == {"r4": [2]} and state["current_item"] == "r4"
+    assert state["results"]["r4"] == {k: v for k, v in checked.items() if k not in {"revision", "evidence"}}
+    assert len(state["review_support"]) == 1 and state["review_support_from_revision"] == 0
+    assert state["review_support"][0]["tries_before"] == 1
+    assert client.post(f"/api/attempts/{aid}/review-topic", headers=h, json={
+        **body, "revision": state["revision"], "request_id": "unknown-review", "topic_id": "storage",
+    }).status_code == 422
+    assert client.get(f"/api/attempts/{aid}", headers=h).json()["revision"] == state["revision"]
+    right = client.post(f"/api/attempts/{aid}/check", headers=h, json={"item_id": "r4", "answer": [0]}).json()
+    assert right["tries"] == 2 and right["hints"] == 0 and right["worth"] == 0.7
+
+
+def test_revision_reviews_respect_activity_locks_and_final_secrecy(client: TestClient, unlocked, monkeypatch) -> None:
+    from app.core.config import settings
+
+    h = register(client)
+    start = client.post("/api/activities/m2-build/attempts", headers=h).json()
+    aid = start["attempt_id"]
+    checked = client.post(f"/api/attempts/{aid}/check", headers=h,
+                          json={"item_id": "r1", "answer": {"A": ["B"]}}).json()
+    monkeypatch.setattr(settings, "unlock_all", False)
+    body = {"revision": checked["revision"], "request_id": "locked-topic", "item_id": "r1",
+            "topic_id": "adjacency-list", "target": "lesson"}
+    assert client.post(f"/api/attempts/{aid}/review-topic", headers=h, json=body).status_code == 403
+    state = client.get(f"/api/attempts/{aid}", headers=h).json()
+    assert state["review_support"] == [] and state["revision"] == checked["revision"]
+    topic = state["review_topics"]["r1"][0]
+    assert not topic["lesson"]["unlocked"] and topic["fallback"]["unlocked"]
+    assert client.post(f"/api/attempts/{aid}/review-topic", headers=h,
+                       json={**body, "request_id": "available-lesson", "target": "fallback"}).status_code == 200
+    monkeypatch.setattr(settings, "unlock_all", True)
+    final = client.post("/api/activities/m6-final/attempts", headers=h).json()
+    assert final["review_topics"] == {}
+    assert client.post(f"/api/attempts/{final['attempt_id']}/review-topic", headers=h, json={
+        "revision": 0, "request_id": "early-final-help", "item_id": "f4", "topic_id": "matrix", "target": "lesson",
+    }).status_code == 403
+    assert client.get(f"/api/attempts/{final['attempt_id']}", headers=h).json()["review_support"] == []
+
+
+def test_revision_support_before_first_try_preserves_legacy_gaps(client: TestClient, unlocked) -> None:
+    from app.content.graphs import GRAPHS
+    from app.engine.graph import Graph
+
+    h = register(client)
+    start = client.post("/api/activities/m2-build/attempts", headers=h).json()
+    aid = start["attempt_id"]
+    database = app.dependency_overrides[get_db]()
+    db = next(database)
+    try:
+        att = db.get(Attempt, aid)
+        payload = dict(att.payload)
+        payload.pop("review_support")
+        payload.pop("review_support_from_revision")
+        att.payload = payload
+        db.commit()
+    finally:
+        database.close()
+    assert client.get(f"/api/attempts/{aid}", headers=h).json()["review_support_from_revision"] is None
+    body = {"revision": 0, "request_id": "pre-answer-review", "item_id": "r1",
+            "topic_id": "objective-2", "target": "lesson"}
+    assert client.post(f"/api/attempts/{aid}/review-topic", headers=h,
+                       json={**body, "item_id": "r4"}).status_code == 422
+    assert client.post(f"/api/attempts/{aid}/review-topic", headers=h, json=body).status_code == 200
+    state = client.get(f"/api/attempts/{aid}", headers=h).json()
+    assert state["results"] == {} and state["review_support_from_revision"] == 1
+    assert state["review_support"][0]["tries_before"] == 0
+    right = client.post(f"/api/attempts/{aid}/check", headers=h, json={
+        "item_id": "r1", "answer": Graph.from_spec(GRAPHS["build"]).adjacency(),
+    }).json()
+    assert right["tries"] == 1 and right["hints"] == 0 and right["worth"] == 1
+    assert client.post(f"/api/attempts/{aid}/review-topic", headers=h, json={
+        **body, "revision": right["revision"], "request_id": "resolved-review",
+    }).status_code == 409
 
 
 def test_account_resume_preserves_drafts_and_disclosed_support(client: TestClient, unlocked) -> None:
@@ -462,3 +618,366 @@ def test_postgres_concurrent_starts_saves_hints_and_finish(client: TestClient, u
         assert all(r["reward"]["xp_gained"] > 0 for r in rewards)
         expected_xp = sum(ACTIVITIES[a][1].xp for a in ["m1-quiz", "m5-quiz"])
         assert client.get("/api/me", headers=h).json()["level"]["xp"] == expected_xp
+
+
+def test_evidence_keeps_wrong_first_before_help_and_replayed_correct_retry(client, unlocked) -> None:
+    h = register(client)
+    start = client.post("/api/activities/m2-build/attempts", headers=h).json()
+    aid = start["attempt_id"]
+    assert start["evidence"]["complete_from_start"]
+    wrong = client.post(f"/api/attempts/{aid}/check", headers=h, json={
+        "item_id": "r3", "answer": [1], "revision": 0, "request_id": "wrong-first",
+    }).json()
+    row = next(r for r in wrong["evidence"]["items"] if r["item_id"] == "r3")
+    first = row["first_response"]
+    assert first["answer"] == [1] and not first["correct"] and first["score"] == 0
+    assert first["kind"] == "first_unassisted_practice" and first["assistance_before"] == []
+    assert first["sequence"] < row["assistance"][0]["sequence"]
+    assert len(first["task_version"]) == 64 and not first["independent_final"]
+    body = {"item_id": "r3", "answer": [0], "revision": wrong["revision"], "request_id": "right-retry"}
+    right = client.post(f"/api/attempts/{aid}/check", headers=h, json=body).json()
+    assert right["tries"] == 2 and right["worth"] == 0.7
+    assert client.post(f"/api/attempts/{aid}/check", headers=h, json=body).json() == right
+    restored = client.get(f"/api/attempts/{aid}", headers=h).json()
+    row = next(r for r in restored["evidence"]["items"] if r["item_id"] == "r3")
+    assert row["first_response"] == first and row["response_count"] == 2
+    assert row["latest_response"]["correct"] and row["latest_response"]["kind"] == "assisted_retry"
+    objective = client.get("/api/me", headers=h).json()["quiz_evidence"]["objectives"][1]
+    assert objective["first_unassisted_practice"] == {"correct": 0, "total": 1}
+    assert objective["assisted_retry"] == {"correct": 1, "total": 1}
+    other = register(client, "evidence-other")
+    assert client.get(f"/api/attempts/{aid}", headers=other).status_code == 404
+    assert client.get("/api/me", headers=other).json()["quiz_evidence"]["objectives"][1]["assisted_retry"]["total"] == 0
+
+
+def test_evidence_hint_first_and_repeat_issuance_remain_practice(client, unlocked) -> None:
+    from app.content.assessments import ASSESSMENTS
+    from app.services.grading import expected_answer
+
+    h = register(client)
+    aid = client.post("/api/activities/m1-quiz/attempts", headers=h).json()["attempt_id"]
+    hint = client.post(f"/api/attempts/{aid}/hint", headers=h, json={
+        "item_id": "a3", "revision": 0, "request_id": "hint-first",
+    }).json()
+    assert all(r["first_response"] is None for r in hint["evidence"]["items"])
+    first = client.post(f"/api/attempts/{aid}/check", headers=h,
+                        json={"item_id": "a3", "answer": [0]}).json()
+    row = next(r for r in first["evidence"]["items"] if r["item_id"] == "a3")
+    assert row["first_response"]["kind"] == "first_assisted_practice" and first["worth"] == 0.85
+    for item in ASSESSMENTS["anatomy-check"].items:
+        if item.id != "a3":
+            client.post(f"/api/attempts/{aid}/check", headers=h,
+                        json={"item_id": item.id, "answer": expected_answer(item)})
+    client.post(f"/api/attempts/{aid}/finish", headers=h, json={})
+    repeated = client.post("/api/activities/m1-quiz/attempts", headers=h, json={"new_attempt": True}).json()
+    assert repeated["evidence"]["prior_exposure"] == "repeat"
+    again = client.post(f"/api/attempts/{repeated['attempt_id']}/check", headers=h,
+                        json={"item_id": "a3", "answer": [0]}).json()
+    row = next(r for r in again["evidence"]["items"] if r["item_id"] == "a3")
+    assert row["first_response"]["kind"] == "repeat_practice" and again["worth"] == 1
+
+
+def test_evidence_pins_items_graphs_hints_and_resumes_published_version(client, unlocked, monkeypatch) -> None:
+    from app.api import course
+    from app.content.assessments import ASSESSMENTS
+    from app.content.graphs import GRAPHS
+    from app.engine.graph import Graph
+
+    h = register(client)
+    start = client.post("/api/activities/m2-build/attempts", headers=h).json()
+    aid = start["attempt_id"]
+    graph = start["items"][0]["graph"]
+    original_hint = ASSESSMENTS["representation-check"].items[2].hint
+    changed = ASSESSMENTS["representation-check"].model_copy(deep=True)
+    changed.items[2].answer = [1]
+    changed.items[2].hint = "A changed hint that must not replace the pinned one."
+    monkeypatch.setitem(ASSESSMENTS, changed.id, changed)
+    monkeypatch.setitem(GRAPHS, "build", {**graph, "edges": []})
+    monkeypatch.setattr(course, "ASSESSMENT_VERSION", 3)
+    resumed = client.post("/api/activities/m2-build/attempts", headers=h).json()
+    assert resumed["attempt_id"] == aid and resumed["compatible"]
+    assert resumed["items"] == start["items"] and resumed["assessment_version"] == 2
+    hinted = client.post(f"/api/attempts/{aid}/hint", headers=h, json={"item_id": "r3"}).json()
+    assert hinted["hint"] == original_hint
+    assert client.post(f"/api/attempts/{aid}/check", headers=h,
+                       json={"item_id": "r3", "answer": [0]}).json()["correct"]
+    assert client.post(f"/api/attempts/{aid}/check", headers=h,
+                       json={"item_id": "r1", "answer": Graph.from_spec(graph).adjacency()}).json()["correct"]
+    assert all("answer" not in i and "hint" not in i and "option_feedback" not in i for i in resumed["items"])
+    assert "content" not in resumed
+
+
+def test_evidence_final_study_has_no_keys_and_blank_items_are_not_responses(client, unlocked) -> None:
+    h = register(client)
+    start = client.post("/api/activities/m6-final/attempts", headers=h).json()
+    aid = start["attempt_id"]
+    body = {"item_id": "f1", "activity_id": "l2-representation", "revision": 0, "request_id": "general-study"}
+    studied = client.post(f"/api/attempts/{aid}/study", headers=h, json=body).json()
+    assert client.post(f"/api/attempts/{aid}/study", headers=h, json=body).json() == studied
+    assert all(r["first_response"] is None for r in studied["evidence"]["items"])
+    assert all(len(r["assistance"]) == 1 and r["assistance"][0]["scope"] == "attempt"
+               for r in studied["evidence"]["items"])
+    restored = client.get(f"/api/attempts/{aid}", headers=h).json()
+    assert restored["results"] == {} and restored["review_topics"] == {}
+    assert all("answer" not in item and "explanation" not in item for item in restored["items"])
+    done = client.post(f"/api/attempts/{aid}/finish", headers=h, json={
+        "answers": {"f4": [0], "f3": {"A": []}, "f5": [], "f10": []},
+        "revision": studied["revision"], "request_id": "final-submit",
+    }).json()
+    assert done["result"]["score"] == 0.1 and done["evidence"]["summary"]["unanswered_final_items"] == 9
+    row = next(r for r in done["evidence"]["items"] if r["item_id"] == "f4")
+    assert row["first_response"]["kind"] == "final_reserved_assisted" and row["first_response"]["correct"]
+    assert not row["first_response"]["independent_final"] and len(row["first_response"]["assistance_before"]) == 1
+    assert all(r["first_response"] is None for r in done["evidence"]["items"] if r["item_id"] != "f4")
+    reopened = client.post("/api/activities/m6-final/attempts", headers=h).json()
+    assert reopened["report"]["evidence"] == done["evidence"]
+
+
+def test_evidence_failures_and_legacy_l1_records_do_not_fabricate_first_responses(client, unlocked) -> None:
+    from app.content.graphs import GRAPHS
+    from app.engine.graph import Graph
+
+    h = register(client)
+    aid = client.post("/api/activities/m2-build/attempts", headers=h).json()["attempt_id"]
+    for body, status in [
+        ({"item_id": "missing", "answer": [0]}, 404),
+        ({"item_id": "r3", "answer": None}, 422),
+        ({"item_id": "r3", "answer": [True]}, 422),
+        ({"item_id": "r3", "answer": [0], "revision": 1}, 409),
+    ]:
+        assert client.post(f"/api/attempts/{aid}/check", headers=h, json=body).status_code == status
+    state = client.get(f"/api/attempts/{aid}", headers=h).json()
+    assert state["revision"] == 0 and state["results"] == {}
+    assert all(r["response_count"] == 0 and r["assistance"] == [] for r in state["evidence"]["items"])
+    body = {"item_id": "r1", "topic_id": "objective-2", "target": "lesson",
+            "revision": 0, "request_id": "l1-review"}
+    client.post(f"/api/attempts/{aid}/review-topic", headers=h, json=body)
+    database = app.dependency_overrides[get_db]()
+    db = next(database)
+    try:
+        att = db.get(Attempt, aid)
+        att.payload = {k: v for k, v in att.payload.items() if k not in {"evidence", "content", "receipts"}}
+        db.commit()
+    finally:
+        database.close()
+    legacy = client.post("/api/activities/m2-build/attempts", headers=h).json()
+    assert legacy["attempt_id"] == aid and not legacy["evidence"]["complete_from_start"]
+    right = client.post(f"/api/attempts/{aid}/check", headers=h, json={
+        "item_id": "r1", "answer": Graph.from_spec(GRAPHS["build"]).adjacency(),
+    }).json()
+    row = right["evidence"]["items"][0]
+    assert row["first_response"]["kind"] == "history_unknown"
+    assert row["first_response"]["assistance_before"][0]["source"] == "L1"
+    state = client.get(f"/api/attempts/{aid}", headers=h).json()
+    assert len(state["review_support"]) == 1 and state["review_support_from_revision"] == 0
+    assert state["evidence"]["summary"]["unrecorded_attempts"] == 1
+
+
+def test_evidence_study_respects_ownership_current_item_locks_and_stale_requests(client, unlocked, monkeypatch) -> None:
+    from app.core.config import settings
+
+    h = register(client)
+    aid = client.post("/api/activities/m2-build/attempts", headers=h).json()["attempt_id"]
+    body = {"item_id": "r1", "activity_id": "l2-representation", "revision": 0, "request_id": "study-once"}
+    other = register(client, "study-other")
+    assert client.post(f"/api/attempts/{aid}/study", headers=other, json=body).status_code == 404
+    assert client.post(f"/api/attempts/{aid}/study", headers=h, json={**body, "item_id": "r3"}).status_code == 422
+    monkeypatch.setattr(settings, "unlock_all", False)
+    assert client.post(f"/api/attempts/{aid}/study", headers=h, json=body).status_code == 403
+    state = client.get(f"/api/attempts/{aid}", headers=h).json()
+    assert state["revision"] == 0 and all(r["assistance"] == [] for r in state["evidence"]["items"])
+    monkeypatch.setattr(settings, "unlock_all", True)
+    assert client.post(f"/api/attempts/{aid}/study", headers=h, json=body).status_code == 200
+    assert client.post(f"/api/attempts/{aid}/study", headers=h,
+                       json={**body, "request_id": "stale-study"}).status_code == 409
+    assert client.post(f"/api/attempts/{aid}/study", headers=h,
+                       json={**body, "activity_id": "m2-represent"}).status_code == 409
+    state = client.get(f"/api/attempts/{aid}", headers=h).json()
+    assert state["results"] == {} and len(state["evidence"]["items"][0]["assistance"]) == 1
+    checked = client.post(f"/api/attempts/{aid}/check", headers=h,
+                          json={"item_id": "r3", "answer": [0]}).json()
+    first = next(r for r in checked["evidence"]["items"] if r["item_id"] == "r3")["first_response"]
+    assert first["kind"] == "first_assisted_practice" and first["assistance_before"][0]["scope"] == "attempt"
+    assert checked["tries"] == 1 and checked["worth"] == 1
+
+
+def test_evidence_closed_legacy_scores_remain_untouched_and_history_is_not_backfilled(client, unlocked) -> None:
+    h = register(client)
+    aid = client.post("/api/activities/m6-final/attempts", headers=h).json()["attempt_id"]
+    client.post(f"/api/attempts/{aid}/finish", headers=h, json={"answers": {"f4": [0]}})
+    database = app.dependency_overrides[get_db]()
+    db = next(database)
+    try:
+        att = db.get(Attempt, aid)
+        att.payload = {k: v for k, v in att.payload.items() if k not in {"evidence", "content", "receipts"}}
+        original = {k: v for k, v in att.result.items() if k != "evidence_summary"}
+        att.result = original
+        db.commit()
+        reopened = client.post("/api/activities/m6-final/attempts", headers=h).json()
+        assert reopened["status"] == "closed" and reopened["report"]["result"]["score"] == 0.1
+        assert reopened["evidence"]["schema_version"] is None
+        assert all(r["first_response"] is None for r in reopened["evidence"]["items"])
+        db.refresh(att)
+        assert att.result == original and "evidence" not in att.payload
+        profile = client.get("/api/me", headers=h).json()
+        assert profile["quiz_evidence"]["unrecorded_attempts"] == 1
+        assert all(r["final_fixed_set"]["total"] == 0 for r in profile["quiz_evidence"]["objectives"])
+    finally:
+        database.close()
+
+
+def test_reserved_final_issuance_resume_exhaustion_and_explicit_repeat(client, unlocked) -> None:
+    from app.content.reserved_finals import FINAL_BANKS, FINAL_GRAPHS
+    from app.services.grading import expected_answer
+
+    h = register(client)
+    endpoint = "/api/activities/m6-final"
+    available = client.get(f"{endpoint}/final-availability", headers=h).json()
+    assert available["unused_versions"] == ["A", "B"] and not available["has_saved_attempt"]
+    assert client.get(f"{endpoint}/final-availability", headers=h).json() == available
+    first_id = None
+    for variant in ("A", "B"):
+        body = {"new_attempt": True, "request_id": f"start-{variant}"}
+        start = client.post(f"{endpoint}/attempts", headers=h, json=body).json()
+        aid = start["attempt_id"]
+        if first_id is None:
+            first_id = aid
+        assert start["evidence"]["final_assignment"] == {
+            "variant": variant, "purpose": "reserved", "unused_at_issuance": True,
+        }
+        assert start["assessment_version"] == 3
+        resumed = client.post(f"{endpoint}/attempts", headers=h, json={**body, "request_id": f"other-{variant}"}).json()
+        assert resumed["attempt_id"] == aid and resumed["items"] == start["items"]
+        assert client.post(f"{endpoint}/attempts", headers=h,
+                           json={**body, "repeat_practice": True}).status_code == 409
+        bank = FINAL_BANKS[f"final-{variant.lower()}"]
+        answers = {i.id: expected_answer(i, FINAL_GRAPHS) for i in bank.items}
+        done_body = {"answers": answers, "revision": 0, "request_id": f"finish-{variant}"}
+        done = client.post(f"/api/attempts/{aid}/finish", headers=h, json=done_body).json()
+        assert done["result"]["score"] == 1 and done["reward"]["stars"] == 3
+        assert all(r["first_response"]["independent_final"] and
+                   r["first_response"]["kind"] == "final_reserved_unassisted" for r in done["evidence"]["items"])
+        assert client.post(f"/api/attempts/{aid}/finish", headers=h, json=done_body).json() == done
+        for request_id in (f"start-{variant}", f"other-{variant}"):
+            acknowledged = client.post(f"{endpoint}/attempts", headers=h,
+                                       json={**body, "request_id": request_id}).json()
+            assert acknowledged["attempt_id"] == aid and acknowledged["status"] == "closed"
+    exhausted = client.get(f"{endpoint}/final-availability", headers=h).json()
+    assert exhausted["exhausted"] and exhausted["unused_versions"] == [] and exhausted["revision_topics"]
+    denied = client.post(f"{endpoint}/attempts", headers=h, json={"new_attempt": True})
+    assert denied.status_code == 409 and denied.json()["detail"]["code"] == "NO_UNUSED_FINAL"
+    repeated = client.post(f"{endpoint}/attempts", headers=h, json={
+        "new_attempt": True, "repeat_practice": True, "request_id": "repeat-start",
+    }).json()
+    assert repeated["evidence"]["final_assignment"] == {"variant": "A", "purpose": "repeat", "unused_at_issuance": False}
+    done = client.post(f"/api/attempts/{repeated['attempt_id']}/finish", headers=h,
+                       json={"answers": {"f4": [0]}}).json()
+    first = done["evidence"]["items"][3]["first_response"]
+    assert first["correct"] and not first["independent_final"] and first["kind"] == "final_repeat"
+    again = client.get(f"/api/attempts/{first_id}", headers=h).json()
+    assert again["evidence"]["final_assignment"]["variant"] == "A" and again["report"]["result"]["score"] == 1
+    other = register(client, "unused-other")
+    assert client.get(f"{endpoint}/final-availability", headers=other).json()["unused_versions"] == ["A", "B"]
+    assert client.get(f"/api/attempts/{first_id}", headers=other).status_code == 404
+    profile = client.get("/api/me", headers=h).json()["quiz_evidence"]["objectives"]
+    assert all(r["final_reserved_unassisted"] == {"correct": 4, "total": 4} for r in profile)
+    assert profile[1]["final_repeat"] == {"correct": 1, "total": 1}
+
+
+def test_reserved_final_preserves_open_and_closed_legacy_bank(client, unlocked) -> None:
+    h = register(client)
+    database = app.dependency_overrides[get_db]()
+    db = next(database)
+    try:
+        legacy = Attempt(user_id=client.get("/api/me", headers=h).json()["id"], activity_id="m6-final",
+                         kind="quiz", status="open", result={}, payload={
+                             "version": 2, "revision": 0, "items": {},
+                             "draft": {"answers": {"f4": [2]}, "current_item": "f4", "reflections": {}},
+                         })
+        db.add(legacy)
+        db.commit()
+        aid = legacy.id
+        resumed = client.post("/api/activities/m6-final/attempts", headers=h).json()
+        assert resumed["attempt_id"] == aid and resumed["assessment_version"] == 2
+        assert resumed["items"][2]["graph"]["id"] == "tree"
+        assert resumed["answers"] == {"f4": [2]} and resumed["evidence"]["final_assignment"] is None
+        closed = client.post(f"/api/attempts/{aid}/finish", headers=h, json={}).json()
+        db.refresh(legacy)
+        stored = legacy.result
+        first = closed["evidence"]["items"][3]["first_response"]
+        assert first["kind"] == "final_fixed_set" and not first["independent_final"]
+        assert client.get("/api/activities/m6-final/final-availability", headers=h).json()["unused_versions"] == ["A", "B"]
+        fresh = client.post("/api/activities/m6-final/attempts", headers=h, json={"new_attempt": True}).json()
+        assert fresh["evidence"]["final_assignment"]["variant"] == "A"
+        db.refresh(legacy)
+        assert legacy.result == stored and legacy.payload["content"]["bank_version"] == 2
+    finally:
+        database.close()
+
+
+def test_reserved_final_pin_survives_catalogue_changes_and_failed_requests(client, unlocked, monkeypatch) -> None:
+    from app.content.assessments import ASSESSMENT_VERSIONS
+    from app.content.reserved_finals import FINAL_BANKS, FINAL_GRAPHS
+
+    h = register(client)
+    start = client.post("/api/activities/m6-final/attempts", headers=h).json()
+    aid = start["attempt_id"]
+    changed = FINAL_BANKS["final-a"].model_copy(deep=True)
+    changed.items[3].answer = [1]
+    monkeypatch.setitem(ASSESSMENT_VERSIONS[3], "final-a", changed)
+    graph = start["items"][4]["graph"]
+    monkeypatch.setitem(FINAL_GRAPHS, graph["id"], {**graph, "edges": []})
+    resumed = client.post("/api/activities/m6-final/attempts", headers=h).json()
+    assert resumed["attempt_id"] == aid and resumed["items"] == start["items"]
+    assert client.post(f"/api/attempts/{aid}/finish", headers=h,
+                       json={"answers": {"f4": [True]}}).status_code == 422
+    assert client.post(f"/api/attempts/{aid}/finish", headers=h,
+                       json={"answers": {"f4": [0]}, "revision": 2}).status_code == 409
+    restored = client.get(f"/api/attempts/{aid}", headers=h).json()
+    assert restored["revision"] == 0 and all(r["response_count"] == 0 for r in restored["evidence"]["items"])
+    assert restored["final_availability"]["unused_versions"] == ["B"]
+    assert client.put(f"/api/attempts/{aid}/draft", headers=h, json={
+        "revision": 0, "request_id": "earlier-draft", "current_item": "f4", "answers": {"f4": [2]},
+    }).status_code == 200
+    done = client.post(f"/api/attempts/{aid}/finish", headers=h, json={"answers": {"f4": [0]}}).json()
+    assert done["result"]["score"] == 0.1 and done["evidence"]["summary"]["unanswered_final_items"] == 9
+    assert done["evidence"]["items"][3]["first_response"]["independent_final"]
+    reopened = client.get(f"/api/attempts/{aid}", headers=h).json()
+    assert reopened["answers"] == {"f4": [0]} and reopened["evidence"]["items"][3]["first_response"]["answer"] == [0]
+
+
+def test_reserved_final_exhaustion_recommends_the_diagnosed_lesson_section(client, unlocked) -> None:
+    h = register(client)
+    for _ in range(2):
+        start = client.post("/api/activities/m6-final/attempts", headers=h, json={"new_attempt": True}).json()
+        client.post(f"/api/attempts/{start['attempt_id']}/finish", headers=h, json={"answers": {"f4": [2]}})
+    available = client.get("/api/activities/m6-final/final-availability", headers=h).json()
+    assert available["exhausted"]
+    matrix = [t for t in available["revision_topics"] if t["specific"] and t["lesson"]["page_id"] == "matrix"]
+    assert len(matrix) == 1
+    saved = client.get("/api/me", headers=h).json()
+    assert client.get("/api/activities/m6-final/final-availability", headers=h).json() == available
+    assert client.get("/api/me", headers=h).json() == saved
+
+
+@pytest.mark.skipif(not os.environ.get("ARIADNE_TEST_DATABASE_URL", "").startswith("postgresql"),
+                    reason="Requires the explicitly configured isolated PostgreSQL database")
+def test_reserved_final_postgres_concurrent_allocation_and_start_receipts(client, unlocked) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    h = register(client)
+    endpoint = "/api/activities/m6-final/attempts"
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        for variant in ("A", "B"):
+            bodies = [{"new_attempt": True, "request_id": f"concurrent-{variant}-{n}"} for n in range(4)]
+            starts = list(pool.map(lambda b: client.post(endpoint, headers=h, json=b).json(), bodies))
+            aid = starts[0]["attempt_id"]
+            assert {s["attempt_id"] for s in starts} == {aid}
+            assert all(s["evidence"]["final_assignment"]["variant"] == variant for s in starts)
+            finish = {"answers": {"f4": [0]}, "revision": 0, "request_id": f"finish-{variant}"}
+            results = list(pool.map(lambda _, aid=aid, finish=finish: client.post(f"/api/attempts/{aid}/finish", headers=h,
+                                                          json=finish).json(), range(4)))
+            assert all(r == results[0] for r in results)
+            retries = list(pool.map(lambda b: client.post(endpoint, headers=h, json=b).json(), bodies))
+            assert all(s["attempt_id"] == aid and s["status"] == "closed" for s in retries)
+    assert client.get("/api/activities/m6-final/final-availability", headers=h).json()["used_versions"] == ["A", "B"]

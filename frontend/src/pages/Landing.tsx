@@ -74,8 +74,9 @@ export function Landing() {
           <div className="eyebrow" style={{ color: 'var(--thread)' }}>Learn depth-first search by playing it</div>
           <h1 style={{ marginTop: 12 }}>Follow the <span className="gold">thread</span>.<br />Escape the labyrinth.</h1>
           <p className="lede">
-            Theseus survived the Labyrinth with a ball of thread and a stick of chalk. That's depth-first search.
-            Explore, trace, backtrack and level up — no prior data-structures knowledge needed.
+            Step into Theseus's role in Ariadne's Labyrinth, with golden thread and chalk to guide your search.
+            Learn graphs and depth-first search before your lecture: start with short lessons, then explore,
+            trace, backtrack and level up — no prior data-structures knowledge needed.
           </p>
           <HeroGraph />
           <div className="feature-row">

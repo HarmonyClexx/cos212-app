@@ -21,6 +21,111 @@ def G(gid: str) -> Graph:
     return Graph.from_spec(GRAPHS[gid])
 
 
+@pytest.mark.parametrize("variant", ["a", "b"])
+def test_reserved_final_keys_and_explanations_against_independent_traversal(variant: str) -> None:
+    import re
+    from collections import Counter, deque
+
+    from app.content.reserved_finals import FINAL_BANKS, FINAL_GRAPHS
+
+    bank = FINAL_BANKS[f"final-{variant}"]
+    assert len(bank.items) == 10 and Counter(i.objective for i in bank.items) == dict.fromkeys(range(1, 6), 2)
+    reference = {}
+
+    def walk(neighbours, start):
+        order, seen, path, events = [], set(), [], []
+
+        def visit(node):
+            seen.add(node)
+            order.append(node)
+            path.append(node)
+            events.append(("visit", node, tuple(path)))
+            for other in neighbours[node]:
+                if other not in seen:
+                    visit(other)
+            path.pop()
+            events.append(("pop", node, tuple(path)))
+
+        visit(start)
+        queue, discovered, breadth = deque([start]), {start}, []
+        while queue:
+            node = queue.popleft()
+            breadth.append(node)
+            for other in neighbours[node]:
+                if other not in discovered:
+                    discovered.add(other)
+                    queue.append(other)
+        return order, breadth, events
+
+    for item in bank.items:
+        if not item.graph:
+            continue
+        spec = FINAL_GRAPHS[item.graph]
+        neighbours = {n["id"]: [] for n in spec["nodes"]}
+        for a, b in spec["edges"]:
+            neighbours[a].append(b)
+            if not spec["directed"]:
+                neighbours[b].append(a)
+        for values in neighbours.values():
+            values.sort()
+        start = item.start or ("B" if item.id == "f9" and variant == "a" else
+                               "D" if item.id == "f9" else "A")
+        order, breadth, events = walk(neighbours, start)
+        assert set(order) == set(neighbours) and len(order) == len(neighbours)
+        reference[item.id] = (neighbours, order, breadth, events)
+        if item.type == "order":
+            assert ", ".join(order) in item.explanation
+            assert grade_item(item, order, FINAL_GRAPHS).correct
+        if item.type == "adjacency":
+            assert grade_item(item, neighbours, FINAL_GRAPHS).correct
+            for node, values in neighbours.items():
+                assert f"{node}: {', '.join(values)}" in item.explanation
+    first = bank.items[0]
+    assert first.answer == reference["f1"][0]["C" if variant == "a" else "E"]
+    assert grade_item(first, first.answer, FINAL_GRAPHS).correct
+    outgoing = reference["f2"][0]
+    assert outgoing["D"] == ["C", "F"] if variant == "a" else "C" in outgoing["G"] and "G" not in outgoing["C"]
+    matrix = bank.items[3]
+    bits = [int(n) for n in re.search(r"\*\*\[(.*?)\]\*\*", matrix.prompt)[1].split(",")]
+    columns = re.search(r"columns ([A-Z])-([A-Z])", matrix.prompt)
+    expected = [chr(ord(columns[1]) + i) for i, bit in enumerate(bits) if bit]
+    assert matrix.options[matrix.answer[0]].replace(" and ", ", ").split(", ") == expected
+    stack = next(e[2] for e in reference["f7"][3] if e[:2] == ("visit" if variant == "a" else "pop", "F"))
+    assert bank.items[6].options[bank.items[6].answer[0]].split(", ") == list(stack)
+    assert bank.items[8].options[bank.items[8].answer[0]].split(", ") == reference["f9"][2]
+    _, depth, breadth, _ = reference["f10"]
+    other = "C" if variant == "a" else "D"
+    assert (depth.index("E") < depth.index(other)) != (breadth.index("E") < breadth.index(other))
+    assert ", ".join(depth) in bank.items[9].explanation and ", ".join(breadth) in bank.items[9].explanation
+
+
+def test_reserved_graphs_are_structurally_distinct_and_not_public_teaching_content() -> None:
+    from itertools import permutations
+
+    from app.content.reserved_finals import FINAL_GRAPHS
+
+    def equivalent(left, right):
+        if (left["directed"], len(left["nodes"]), len(left["edges"])) != (
+            right["directed"], len(right["nodes"]), len(right["edges"])
+        ):
+            return False
+        nodes = [n["id"] for n in left["nodes"]]
+        targets = [n["id"] for n in right["nodes"]]
+        norm = tuple if left["directed"] else frozenset
+        edges = {norm(e) for e in right["edges"]}
+        for image in permutations(targets):
+            mapping = dict(zip(nodes, image, strict=True))
+            if {norm((mapping[a], mapping[b])) for a, b in left["edges"]} == edges:
+                return True
+        return False
+
+    assert not FINAL_GRAPHS.keys() & GRAPHS.keys()
+    earlier = list(GRAPHS.values())
+    for reserved in FINAL_GRAPHS.values():
+        assert all(not equivalent(reserved, other) for other in earlier), reserved["id"]
+        earlier.append(reserved)
+
+
 # --- traversal ------------------------------------------------------------------------------
 
 @pytest.mark.parametrize(("gid", "start", "dfs", "bfs"), [
@@ -253,6 +358,106 @@ def test_grade_adjacency_and_order() -> None:
     assert not bfs_like.correct and bfs_like.detail.get("looks_like") == "bfs"
 
 
+def test_representation_adjacency_diagnostics_preserve_scores() -> None:
+    item = _item("representation-check", "r1")
+    perfect = G("build").adjacency()
+    grade = grade_item(item, {**perfect, "A": ["B", "C"]})
+    assert not grade.correct and grade.score == 0.8
+    assert grade.detail["wrong_rows"] == ["A"]
+    assert grade.detail["row_feedback"]["A"] == {
+        "missing_count": 1, "extra": ["C"], "reverse_missing_count": 1, "incoming_only": [],
+    }
+    assert set(grade.detail["concepts"]) == {
+        "neighbour-omitted", "non-neighbour-included", "undirected-edge-one-way",
+    }
+    assert "both endpoint rows" in grade.detail["explanation"]
+    assert "missing" not in grade.detail["row_feedback"]["A"]  # counts, not undisclosed neighbours
+    reordered = {n: [*reversed(vs), *vs] for n, vs in perfect.items()}
+    assert grade_item(item, reordered).correct and grade_item(item, reordered).score == 1
+
+
+def test_representation_empty_rows_do_not_imply_one_way_edges() -> None:
+    item = _item("representation-check", "r1")
+    grade = grade_item(item, {})
+    assert not grade.correct and grade.score == 0
+    assert grade.detail["concepts"] == ["neighbour-omitted"]
+    assert all(r["reverse_missing_count"] == 0 for r in grade.detail["row_feedback"].values())
+    assert grade_item(item, None).detail == {}
+
+
+def test_representation_direction_diagnoses_only_incoming_entries() -> None:
+    item = _item("representation-check", "r2")
+    perfect = G("build-directed").adjacency()
+    grade = grade_item(item, {**perfect, "A": ["B", "D"]})
+    assert not grade.correct and grade.score == 0.8
+    assert grade.detail["row_feedback"]["A"] == {
+        "missing_count": 0, "extra": ["D"], "reverse_missing_count": 0, "incoming_only": ["D"],
+    }
+    assert "direction-ignored" in grade.detail["concepts"]
+    unrelated = grade_item(item, {**perfect, "A": ["B", "E"]})
+    assert unrelated.detail["row_feedback"]["A"]["incoming_only"] == []
+    assert "direction-ignored" not in unrelated.detail["concepts"]
+
+
+@pytest.mark.parametrize(("bank", "iid", "choice", "concept", "reason"), [
+    ("representation-check", "r3", 1, "undirected-matrix-symmetry", "same undirected edge"),
+    ("representation-check", "r3", 3, "undirected-matrix-symmetry", "0/1"),
+    ("representation-check", "r4", 1, "matrix-column-interpretation", "0 means"),
+    ("representation-check", "r4", 2, "matrix-column-interpretation", "first 1"),
+    ("representation-check", "r4", 3, "matrix-column-interpretation", "row label"),
+    ("representation-check", "r5", 1, "representation-storage", "missing edges"),
+    ("representation-check", "r5", 2, "representation-storage", "existing neighbours"),
+    ("final", "f4", 2, "matrix-column-interpretation", "every 1"),
+])
+def test_representation_option_feedback(bank, iid, choice, concept, reason) -> None:
+    item = _item(bank, iid)
+    grade = grade_item(item, [choice])
+    assert not grade.correct and grade.score == 0
+    assert grade.detail["concepts"] == [concept]
+    assert reason in grade.detail["explanation"]
+    assert grade_item(item, item.answer).correct and grade_item(item, item.answer).score == 1
+
+
+@pytest.mark.parametrize("answer", [[1, 2], [], [99], None])
+def test_representation_ambiguous_mcq_has_no_specific_diagnosis(answer) -> None:
+    grade = grade_item(_item("representation-check", "r4"), answer)
+    assert not grade.correct and grade.score == 0 and grade.detail == {}
+
+
+@pytest.mark.parametrize(("concepts", "pages"), [
+    (["neighbour-omitted", "undirected-edge-one-way"], ["list"]),
+    (["direction-ignored"], ["matrix"]),
+    (["matrix-column-interpretation", "undirected-matrix-symmetry"], ["matrix"]),
+    (["representation-storage"], ["choose"]),
+    (["direction-ignored", "neighbour-omitted"], ["matrix", "list"]),
+])
+def test_revision_topics_match_existing_sections(concepts, pages, monkeypatch) -> None:
+    from app.core.config import settings
+    from app.services.progress import module_states, revision_topics
+
+    monkeypatch.setattr(settings, "unlock_all", True)
+    topics = revision_topics(2, concepts, module_states({}))
+    assert [t["lesson"]["page_id"] for t in topics] == pages
+    assert all(t["specific"] and t["lesson"]["unlocked"] for t in topics)
+    assert all(t["practice"]["activity_id"] == "m2-represent" for t in topics)
+
+
+def test_revision_topics_keep_general_and_reachable_fallbacks(monkeypatch) -> None:
+    from app.core.config import settings
+    from app.services.progress import module_states, revision_topics
+
+    monkeypatch.setattr(settings, "unlock_all", False)
+    states = module_states({})
+    generic = revision_topics(2, ["unknown-concept"], states)[0]
+    assert not generic["specific"] and generic["lesson"]["page_id"] is None
+    assert not generic["lesson"]["unlocked"] and not generic["practice"]["unlocked"]
+    assert generic["fallback"]["activity_id"] == "l1-graphs" and generic["fallback"]["unlocked"]
+    assert revision_topics(None, None, states) == []
+    for objective in range(1, 6):
+        topic = revision_topics(objective, None, states)[0]
+        assert not topic["specific"] and topic["lesson"]["activity_id"] in ACTIVITIES
+
+
 @pytest.mark.parametrize(("bank", "iid", "right", "swapped"), [
     ("compare-check", "c5", [1], [0]), ("final", "f10", [2], [1]),
 ])
@@ -281,3 +486,6 @@ def test_weak_mastery_sends_the_learner_back_to_the_lesson() -> None:
     revise = {r["objective"]: r for r in recommendations(module_states({}), mastery) if r["type"] == "revise"}
     assert (revise[1]["module"], revise[1]["activity_id"]) == ("intro", "l1-graphs")  # struggling: re-learn
     assert revise[2]["module"] == "representation"  # developing: practise again
+    assert revise[1]["reason"].startswith("Running practice score")
+    assert "is 20%" in revise[1]["reason"] and "re-read the lesson" in revise[1]["reason"]
+    assert "is 50%" in revise[2]["reason"] and "70% practice target" in revise[2]["reason"]

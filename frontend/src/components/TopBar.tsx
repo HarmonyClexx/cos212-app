@@ -4,6 +4,7 @@ import { useAuth } from '../lib/auth'
 import { useTheme } from '../lib/theme'
 import { Icon, Logo } from './Icon'
 import { Meter } from './bits'
+import { CelebrationButton, FeedbackSoundButton } from './FeedbackSoundButton'
 import { flushQuizDraft } from '../activities/useQuizDraft'
 
 export function TopBar() {
@@ -15,7 +16,7 @@ export function TopBar() {
   return (
     <header className="topbar">
       <div className="container topbar-inner">
-        <NavLink to="/" className="logo" aria-label="Ariadne home"><Logo /><span>Ariadne</span></NavLink>
+        <NavLink to="/" className="logo" aria-label="Ariadne map" title="Ariadne - Map"><Logo /><span>Ariadne</span></NavLink>
         <nav className="nav" aria-label="Main">
           <NavLink to="/" end aria-label="Map"><Icon name="map" /><span>Map</span></NavLink>
           <NavLink to="/leaderboard" aria-label="Leaderboard"><Icon name="trophy" /><span>Leaderboard</span></NavLink>
@@ -37,6 +38,8 @@ export function TopBar() {
               </div>
             </>
           )}
+          <FeedbackSoundButton />
+          <CelebrationButton />
           <button className="icon-btn" onClick={toggleTheme} aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}>
             <Icon name={theme === 'dark' ? 'sun' : 'moon'} />
           </button>
